@@ -46,13 +46,14 @@ jobs:
         shell: bash
         run: echo "${{ github.ref_name }}" > ./publish/version.txt
 
-      # ZIP IT UP (Naming it LocresStudio)
+      # ZIP IT UP
       - name: Create Archive
         shell: bash
         run: |
           cd publish
           if [ "${{ matrix.os-name }}" == "Windows" ]; then
-            powershell Compress-Archive -Path * -DestinationPath ../LocresStudio-${{ github.ref_name }}-${{ matrix.runtime }}.zip
+            # FIX: Wrapped command in quotes so Bash passes the '*' to PowerShell correctly
+            powershell -Command "Compress-Archive -Path * -DestinationPath ../LocresStudio-${{ github.ref_name }}-${{ matrix.runtime }}.zip"
           else
             zip -r ../LocresStudio-${{ github.ref_name }}-${{ matrix.runtime }}.zip .
           fi
