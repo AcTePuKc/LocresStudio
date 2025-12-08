@@ -16,16 +16,16 @@ LocresStudio is a specialized GUI tool for editing Unreal Engine `.locres` files
 
 ### ⚡ Workflow Enhancements
 
-* **📂 Multi-Tab Interface:** Open, edit, and switch between multiple localization files simultaneously. Tabs indicate which files have unsaved changes (`*`).
-* **📊 Excel Compatibility:**
-  * Import and Export **TSV** (Tab-Separated Values) and **CSV** files.
-  * **Smart Copy/Paste:** Select multiple rows in the grid and copy them directly into Excel or Google Sheets.
-* **💾 Safe Editing:** Uses a sandboxed temp-file system to prevent crashes or file-locking issues when the game is running in the background.
+* **🖱️ Enhanced Context Menu:** Right-click any row to quickly **Copy Source to Target**, **Find/Replace**, or **🌐 Open in Google Translate** for instant lookups.
+* **📝 Live Status Bar:** Track your progress with a real-time row counter (`Row: 15 / 1000`) and unsaved changes indicator at the bottom of the window.
+* **📂 Multi-Tab Interface:** Open, edit, and switch between multiple localization files simultaneously.
+* **📊 Excel Compatibility:** Import/Export **TSV** and **CSV** files with smart Copy/Paste support for Excel/Google Sheets.
+* **💾 Safe Editing:** Uses a sandboxed temp-file system to prevent crashes or file-locking issues.
 * **🎮 Discord Rich Presence:** Shows which file you are currently editing and your line count directly on your Discord profile.
 
 ### 🛠️ Technical Improvements
 
-* **🚀 Optimized Build:** Rebuilt on **.NET 8** with aggressive trimming. The executable is self-contained and **~70% smaller** (only ~26MB) while remaining fully portable.
+* **🚀 Lightweight:** Optimized release build (~11MB download / ~40MB installed).
 * **🔄 Legacy Support:** Full support for importing text files from [UE4LocalizationTool](https://github.com/amrshaheen61/UE4LocalizationsTool) (supports the `[~NAMES-INCLUDED~]` format).
 * **🐧 Linux Ready:** Improved architecture ensures better compatibility with Wine environments.
 
@@ -64,11 +64,11 @@ LocresStudio runs natively on Linux (UI), but the backend tool (`UnrealLocres`) 
 1. Download the **linux-x64.zip** from Releases.
 2. Extract the files.
 3. Download the original **[UnrealLocres CLI tool](https://github.com/akintos/UnrealLocres/releases/latest)** (It is an `.exe`, but we will run it with Wine).
-4. Place `UnrealLocres.exe` inside your extracted folder (next to `UnrealLocresEditor.Desktop`).
+4. Place `UnrealLocres.exe` inside your extracted folder (next to `LocresStudio`).
 5. Open a terminal in that folder and run:
 
     ```bash
-    ./UnrealLocresEditor.Desktop
+    ./LocresStudio
     ```
 
 6. **First Time Setup:**
@@ -89,4 +89,11 @@ If you appreciate the original work that made this tool possible, please conside
 
 ---
 
+## Known Issues / Limitations
+
+* The only way to add new row is to export the file to csv - create new row with the key you want and save that - then import it with Locres Studio.
+* Google Translate - If multiple rows are selected it translates only that row - I might add GoogleTranslateFreeAPI - which has option for multiple, but this is as for now
+
 *Powered by [UnrealLocres](https://github.com/akintos/UnrealLocres) and [AvaloniaUI](https://avaloniaui.net/).*
+
+*Forked and maintained by [AcTePuKc](https://github.com/AcTePuKc).*

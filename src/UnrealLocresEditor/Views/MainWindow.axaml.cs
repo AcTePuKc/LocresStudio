@@ -70,6 +70,7 @@ namespace UnrealLocresEditor.Views
                     _selectedDocument = value;
                     RaisePropertyChanged(nameof(SelectedDocument));
                     ApplySelectedDocumentState();
+                    UpdateStatusBar();
 
                     // NEW: Update Discord immediately when clicking a tab
                     _discordRPC.UpdatePresence(_selectedDocument);
@@ -87,12 +88,22 @@ namespace UnrealLocresEditor.Views
             _appConfig = AppConfig.Instance;
             InitializeComponent();
 
+            // 1. FIND ALL CONTROLS (Fixes the Null Reference Crash)
             _dataGrid = this.FindControl<DataGrid>("uiDataGrid");
+
+            // Add these two lines so C# knows about your new XAML tags:
+            uiStatusText = this.FindControl<TextBlock>("uiStatusText");
+            uiRowCounter = this.FindControl<TextBlock>("uiRowCounter");
 
             ApplyEditorSettings();
 
+            // 2. SUBSCRIBE TO EVENTS
             _dataGrid.CellEditEnded += DataGrid_CellEditEnded;
             _dataGrid.BeginningEdit += DataGrid_BeginningEdit;
+
+            // Keep this! This updates the bar when you click a row.
+            _dataGrid.SelectionChanged += (s, e) => UpdateStatusBar();
+
             UseWine = _appConfig.UseWine;
             _discordRPC = new DiscordService();
 
@@ -674,6 +685,38 @@ namespace UnrealLocresEditor.Views
             return await _dialogResult.Task;
         }
 
+        // Statusbar Viewer
+        private void UpdateStatusBar()
+        {
+            // 1. SAFETY CHECK: If the controls are null, stop immediately.
+            // This prevents the crash on startup.
+            if (uiRowCounter == null || uiStatusText == null) return;
+
+            if (_rows == null)
+            {
+                uiRowCounter.Text = "0 / 0";
+                uiStatusText.Text = "Ready";
+                return;
+            }
+
+            // Get counts
+            int totalRows = _rows.Count;
+            // SelectedIndex is 0-based, so we add 1. If nothing selected (-1), show 0.
+            int currentRow = _dataGrid.SelectedIndex + 1;
+
+            uiRowCounter.Text = $"{currentRow} / {totalRows}";
+
+            // Update Left text based on file
+            if (SelectedDocument != null)
+            {
+                string editedState = SelectedDocument.HasUnsavedChanges ? "[Unsaved]" : "";
+                uiStatusText.Text = $"Editing: {SelectedDocument.DisplayName} {editedState}";
+            }
+            else
+            {
+                uiStatusText.Text = "Ready";
+            }
+        }
         // Keybinds
         private void MainWindow_KeyDown(object sender, KeyEventArgs e)
         {
@@ -1270,6 +1313,7 @@ namespace UnrealLocresEditor.Views
                 if (SelectedDocument == doc)
                 {
                     ApplySelectedDocumentState();
+                    UpdateStatusBar();
                 }
                 else
                 {
@@ -2267,6 +2311,42 @@ namespace UnrealLocresEditor.Views
         private void FindReplaceDialog_Closed(object sender, EventArgs e)
         {
             findReplaceDialog = null;
+        }
+
+        // Google Translate Left Click Integration
+        private void GoogleTranslateMenuItem_Click(object sender, RoutedEventArgs e)
+        {
+            // Check if a row is selected
+            if (_dataGrid.SelectedItem is DataRow row)
+            {
+                // 1. Get the Source Text (Assuming Column 1 is Source)
+                // We use null check in case the array is short
+                string sourceText = row.Values.Length > 1 ? row.Values[1] : "";
+
+                if (!string.IsNullOrWhiteSpace(sourceText))
+                {
+                    try
+                    {
+                        // 2. Encode text (handle spaces, symbols)
+                        string encoded = System.Net.WebUtility.UrlEncode(sourceText);
+
+                        // 3. Construct URL
+                        // sl=auto (Detect Source), tl=auto (Translate to your OS language)
+                        string url = $"https://translate.google.com/?sl=auto&tl=auto&text={encoded}&op=translate";
+
+                        // 4. Open Browser
+                        Process.Start(new ProcessStartInfo
+                        {
+                            FileName = url,
+                            UseShellExecute = true
+                        });
+                    }
+                    catch (Exception ex)
+                    {
+                        Console.WriteLine($"Browser launch failed: {ex.Message}");
+                    }
+                }
+            }
         }
 
         // Preferences

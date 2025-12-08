@@ -3,7 +3,8 @@
     <OutputType>WinExe</OutputType>
     <TargetFramework>net8.0</TargetFramework>
     <AssemblyName>LocresStudio</AssemblyName>
-    <Nullable>enable</Nullable>
+		<ApplicationIcon>..\UnrealLocresEditor\Assets\ULE-icon.ico</ApplicationIcon>
+		<Nullable>enable</Nullable>
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     
     <!-- RELEASE OPTIMIZATIONS -->

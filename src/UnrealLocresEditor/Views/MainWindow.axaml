@@ -75,7 +75,7 @@
 
 	</Window.Styles>
 
-	<Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,*">
+	<Grid ColumnDefinitions="*,Auto" RowDefinitions="Auto,Auto,*,Auto">
 
 		<Menu Grid.Row="0" Grid.ColumnSpan="2">
 
@@ -198,7 +198,73 @@
 				GridLinesVisibility="All"
 				IsReadOnly="False"
 				MinColumnWidth="50">
+			<DataGrid.ContextMenu>
+				<ContextMenu>
+					<!-- COPY ACTIONS -->
+					<MenuItem Header="Copy Source to Target"
+										Click="CopySourceToTarget"
+										InputGesture="Ctrl+T"/>
+
+					<MenuItem Header="Copy Source to Target (Selected)"
+										Click="CopySourceToTargetMultiple"
+										InputGesture="Ctrl+Shift+T"/>
+
+					<Separator/>
+
+					<!-- TOOLS -->
+					<MenuItem Header="Open in Google Translate..."
+										Click="GoogleTranslateMenuItem_Click">
+						<MenuItem.Icon>
+							<!-- Simple text icon, or you can use an Image -->
+							<TextBlock Text="🌐"/>
+						</MenuItem.Icon>
+					</MenuItem>
+
+					<Separator/>
+
+					<!-- FIND ACTIONS -->
+					<MenuItem Header="Find..."
+										Click="FindMenuItem_Click"
+										InputGesture="Ctrl+F"/>
+
+					<MenuItem Header="Find and Replace..."
+										Click="FindReplaceMenuItem_Click"
+										InputGesture="Ctrl+H"/>
+				</ContextMenu>
+			</DataGrid.ContextMenu>
 		</DataGrid>
+		
+		<!-- Row 3: STATUS BAR -->
+		<Border Grid.Row="3"
+						Grid.ColumnSpan="2"
+						Background="{DynamicResource DataGridHeaderColor}"
+						BorderBrush="{DynamicResource BorderColor}"
+						BorderThickness="0,1,0,0"
+						Padding="10,4">
+			<Grid ColumnDefinitions="*, Auto">
+
+				<!-- Left Side: Status Message -->
+				<TextBlock Name="uiStatusText"
+									 Text="Ready"
+									 Foreground="{DynamicResource TextColor}"
+									 VerticalAlignment="Center"
+									 FontSize="12"/>
+
+				<!-- Right Side: Row Counter -->
+				<StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="5">
+					<TextBlock Text="Row:"
+										 Foreground="{DynamicResource SettingsTextColor}"
+										 VerticalAlignment="Center"
+										 FontSize="12"/>
+					<TextBlock Name="uiRowCounter"
+										 Text="0 / 0"
+										 Foreground="{DynamicResource TextColor}"
+										 VerticalAlignment="Center"
+										 FontWeight="Bold"
+										 FontSize="12"/>
+				</StackPanel>
+			</Grid>
+		</Border>
 
 	</Grid>
 </Window>
