@@ -8,25 +8,32 @@ namespace UnrealLocresEditor.Utils
     {
         public static string GetExecutablePath(bool useWine)
         {
-            if (PlatformUtils.IsLinux())
-                return useWine ? "wine UnrealLocres.exe" : "./UnrealLocres";
-            else // Windows
-                return "UnrealLocres.exe";
+            return GetExecutablePath(useWine, PlatformUtils.IsLinux());
         }
 
         public static ProcessStartInfo GetProcessStartInfo(
             string command,
             string locresFilePath,
             bool useWine,
-            string csvFileName = null
+            string? csvFilePath = null,
+            string? outputPath = null
         )
         {
             var startInfo = new ProcessStartInfo
             {
                 FileName = GetExecutablePath(useWine),
-                Arguments = GetArguments(command, locresFilePath, useWine, csvFileName),
+                Arguments = GetArguments(
+                    command,
+                    locresFilePath,
+                    useWine,
+                    PlatformUtils.IsLinux(),
+                    csvFilePath,
+                    outputPath
+                ),
                 RedirectStandardOutput = true,
+                RedirectStandardError = true,
                 UseShellExecute = false,
+                WorkingDirectory = System.AppContext.BaseDirectory,
             };
 
             if (PlatformUtils.IsLinux() && useWine)
@@ -35,41 +42,44 @@ namespace UnrealLocresEditor.Utils
             return startInfo;
         }
 
-        private static string GetArguments(
+        internal static string GetExecutablePath(bool useWine, bool isLinux)
+        {
+            if (isLinux)
+                return useWine ? "wine" : "./UnrealLocres";
+
+            return "UnrealLocres.exe";
+        }
+
+        internal static string GetArguments(
             string command,
             string locresFilePath,
             bool useWine,
-            string csvFileName = null
+            bool isLinux,
+            string? csvFilePath = null,
+            string? outputPath = null
         )
         {
-            if (PlatformUtils.IsLinux())
-            {
-                if (useWine)
-                {
-                    return csvFileName == null
-                        ? $"UnrealLocres.exe {command} \"{locresFilePath}\""
-                        : $"UnrealLocres.exe {command} \"{locresFilePath}\" \"{csvFileName}\"";
-                }
-                else
-                {
-                    return csvFileName == null
-                        ? $"./UnrealLocres {command} \"{locresFilePath}\""
-                        : $"./UnrealLocres {command} \"{locresFilePath}\" \"{csvFileName}\"";
-                }
-            }
-            else
-            {
-                return csvFileName == null
-                    ? $"{command} \"{locresFilePath}\""
-                    : $"{command} \"{locresFilePath}\" \"{csvFileName}\"";
-            }
+            var args = new StringBuilder();
+
+            if (isLinux && useWine)
+                args.Append("UnrealLocres.exe ");
+
+            args.Append($"{command} \"{locresFilePath}\"");
+
+            if (!string.IsNullOrWhiteSpace(csvFilePath))
+                args.Append($" \"{csvFilePath}\"");
+
+            if (!string.IsNullOrWhiteSpace(outputPath))
+                args.Append($" -o \"{outputPath}\"");
+
+            return args.ToString();
         }
 
         public static ProcessStartInfo GetMergeProcessStartInfo(
             string targetLocresPath,
             string sourceLocresPath,
             bool useWine,
-            string outputPath = null
+            string? outputPath = null
         )
         {
             var startInfo = new ProcessStartInfo
@@ -79,6 +89,7 @@ namespace UnrealLocresEditor.Utils
                     targetLocresPath,
                     sourceLocresPath,
                     useWine,
+                    PlatformUtils.IsLinux(),
                     outputPath
                 ),
                 RedirectStandardOutput = true,
@@ -88,23 +99,28 @@ namespace UnrealLocresEditor.Utils
                     System.Reflection.Assembly.GetExecutingAssembly().Location
                 ),
             };
+
             if (PlatformUtils.IsLinux() && useWine)
                 startInfo.Environment["WINEPREFIX"] = WineUtils.WinePrefixDirectory;
             return startInfo;
         }
 
-        private static string GetMergeArguments(
+        internal static string GetMergeArguments(
             string targetLocresPath,
             string sourceLocresPath,
             bool useWine,
-            string outputPath = null
+            bool isLinux,
+            string? outputPath = null
         )
         {
             var args = new StringBuilder();
+            if (isLinux && useWine)
+                args.Append("UnrealLocres.exe ");
+
             args.Append("merge ");
             args.Append($"\"{targetLocresPath}\" \"{sourceLocresPath}\"");
 
-            if (!string.IsNullOrEmpty(outputPath))
+            if (!string.IsNullOrWhiteSpace(outputPath))
                 args.Append($" -o \"{outputPath}\"");
 
             return args.ToString();

@@ -19,14 +19,17 @@ jobs:
           - os: windows-latest
             os-name: Windows
             runtime: win-x64
+            publish-trimmed: true
           # Windows x86 (ADDED THIS)
           - os: windows-latest
             os-name: Windows
             runtime: win-x86
+            publish-trimmed: true
           # Linux x64
           - os: ubuntu-latest
             os-name: Linux
             runtime: linux-x64
+            publish-trimmed: false
 
     steps:
       - name: Checkout Code
@@ -39,7 +42,7 @@ jobs:
 
       - name: Publish
         run: |
-          dotnet publish src/UnrealLocresEditor.Desktop/UnrealLocresEditor.Desktop.csproj -c Release -r ${{ matrix.runtime }} -o ./publish /p:PublishSingleFile=true /p:SelfContained=true /p:PublishTrimmed=true
+          dotnet publish src/UnrealLocresEditor.Desktop/UnrealLocresEditor.Desktop.csproj -c Release -r ${{ matrix.runtime }} -o ./publish /p:PublishSingleFile=true /p:SelfContained=true /p:PublishTrimmed=${{ matrix.publish-trimmed }}
 
       # CREATE VERSION.TXT (Inside the zip)
       - name: Create version.txt

@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Linq;
 using System.Text.RegularExpressions;
 using Newtonsoft.Json;
 
@@ -10,14 +11,17 @@ namespace UnrealLocresEditor.Utils
     {
         public static readonly string ThemeKey = "CoolGray";
         public static readonly string AccentColor = "#4e3cb2";
-        public static readonly bool DiscordRPCEnabled = true;
+        public static readonly bool DiscordRPCEnabled = !OperatingSystem.IsLinux();
         public static readonly bool DiscordRPCPrivacy = false;
         public static readonly string DiscordRPCPrivacyString = "Editing a file";
-        public static readonly bool UseWine = false;
+        public static readonly bool UseWine = OperatingSystem.IsLinux();
         public static readonly TimeSpan AutoSaveInterval = TimeSpan.FromMinutes(5);
         public static readonly bool AutoSaveEnabled = true;
         public static readonly bool AutoUpdateEnabled = true;
         public static readonly double DefaultColumnWidth = 300;
+        public static readonly bool RestoreLastSession = true;
+        public static readonly bool OpenSaveFolderAfterSaving = false;
+        public static readonly bool EnableDebugLogging = false;
 
         // NEW FONT SETTINGS
         public static readonly string EditorFontFamily = "Segoe UI"; // Default font
@@ -40,6 +44,11 @@ namespace UnrealLocresEditor.Utils
         public bool AutoSaveEnabled { get; set; } = DefaultConfig.AutoSaveEnabled;
         public bool AutoUpdateEnabled { get; set; } = DefaultConfig.AutoUpdateEnabled;
         public double DefaultColumnWidth { get; set; } = DefaultConfig.DefaultColumnWidth;
+        public bool RestoreLastSession { get; set; } = DefaultConfig.RestoreLastSession;
+        public bool OpenSaveFolderAfterSaving { get; set; } = DefaultConfig.OpenSaveFolderAfterSaving;
+        public bool EnableDebugLogging { get; set; } = DefaultConfig.EnableDebugLogging;
+        public List<string> RecentFiles { get; set; } = new();
+        public List<string> LastSessionFiles { get; set; } = new();
 
         // NEW FONT SETTINGS PROPERTIES
         public string EditorFontFamily { get; set; } = DefaultConfig.EditorFontFamily;
@@ -57,6 +66,15 @@ namespace UnrealLocresEditor.Utils
                         _instance ??= Load();
                     }
                 }
+                return _instance;
+            }
+        }
+
+        public static AppConfig Reload()
+        {
+            lock (_lock)
+            {
+                _instance = Load();
                 return _instance;
             }
         }
@@ -122,6 +140,18 @@ namespace UnrealLocresEditor.Utils
           config => config.AutoUpdateEnabled == true || config.AutoUpdateEnabled == false
         },
         {
+          "RestoreLastSession",
+          config => config.RestoreLastSession == true || config.RestoreLastSession == false
+        },
+        {
+          "OpenSaveFolderAfterSaving",
+          config => config.OpenSaveFolderAfterSaving == true || config.OpenSaveFolderAfterSaving == false
+        },
+        {
+          "EnableDebugLogging",
+          config => config.EnableDebugLogging == true || config.EnableDebugLogging == false
+        },
+        {
           "DefaultColumnWidth",
           config => config.DefaultColumnWidth > 0 && config.DefaultColumnWidth <= 2500
         },
@@ -134,60 +164,131 @@ namespace UnrealLocresEditor.Utils
                     "EnableRTL",
                     config => config.EnableRTL == true || config.EnableRTL == false
                 },
+                {
+                    "RecentFiles",
+                    config => config.RecentFiles != null
+                },
+                {
+                    "LastSessionFiles",
+                    config => config.LastSessionFiles != null
+                },
       };
         }
 
         public static bool IsValidHexColor(string color)
         {
-            // Avalonia only seems to support 6 digit hex codes (not including #)
-            if (color.Length > 7)
+            return TryNormalizeHexColor(color, out _);
+        }
+
+        private static bool TryNormalizeHexColor(string? color, out string normalizedColor)
+        {
+            normalizedColor = DefaultConfig.AccentColor;
+
+            if (string.IsNullOrWhiteSpace(color))
+                return false;
+
+            var trimmed = color.Trim();
+            if (Regex.IsMatch(trimmed, @"^#[0-9A-Fa-f]{6}$"))
             {
-                color = color.Substring(0, 7);
+                normalizedColor = trimmed;
+                return true;
             }
-            string hexColorPattern = @"^#[0-9A-Fa-f]{6}$";
-            return Regex.IsMatch(color.Trim(), hexColorPattern);
+
+            if (Regex.IsMatch(trimmed, @"^#[0-9A-Fa-f]{8}$"))
+            {
+                normalizedColor = "#" + trimmed.Substring(3, 6);
+                return true;
+            }
+
+            return false;
         }
 
         public static AppConfig Load()
         {
+            string filePath = GetConfigFilePath();
+            Logger.Log($"Attempting to load config from '{filePath}'");
+
             try
             {
-                string filePath = GetConfigFilePath();
-
                 if (File.Exists(filePath))
                 {
                     string json = File.ReadAllText(filePath);
-                    var config = JsonConvert.DeserializeObject<AppConfig>(json);
+                    Logger.Log($"Read config.json ({json.Length} chars)");
 
-                    if (config != null)
+                    var config = JsonConvert.DeserializeObject<AppConfig>(json) ?? new AppConfig();
+                    if (TryNormalizeHexColor(config.AccentColor, out var normalizedAccentColor))
                     {
-                        var validationRules = GetValidationRules();
+                        config.AccentColor = normalizedAccentColor;
+                    }
+                    Logger.Log($"Deserialized config. RecentFiles: {config.RecentFiles?.Count ?? 0}, LastSessionFiles: {config.LastSessionFiles?.Count ?? 0}");
 
-                        foreach (var rule in validationRules)
+                    var validationRules = GetValidationRules();
+
+                    foreach (var rule in validationRules)
+                    {
+                        var property = typeof(AppConfig).GetProperty(rule.Key);
+                        if (property != null)
                         {
-                            var property = typeof(AppConfig).GetProperty(rule.Key);
-                            if (property != null)
+                            if (!rule.Value(config))
                             {
-                                var value = property.GetValue(config);
-                                if (!rule.Value(config))
-                                {
-                                    // If validation fails, revert to the default config value
-                                    property.SetValue(
-                    config,
-                    typeof(DefaultConfig).GetProperty(rule.Key)?.GetValue(null)
-                  );
-                                }
+                                // If validation fails, revert to the default config value.
+                                property.SetValue(config, GetDefaultValue(rule.Key));
+                                Logger.Log($"Validation failed for '{rule.Key}', reverted to default.");
                             }
                         }
-
-                        return config;
                     }
+
+                    config.RecentFiles = (config.RecentFiles ?? new List<string>())
+                        .Where(path => !string.IsNullOrWhiteSpace(path))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Take(10)
+                        .ToList();
+                    config.LastSessionFiles = (config.LastSessionFiles ?? new List<string>())
+                        .Where(path => !string.IsNullOrWhiteSpace(path))
+                        .Distinct(StringComparer.OrdinalIgnoreCase)
+                        .Take(10)
+                        .ToList();
+
+                    Logger.Log($"Final RecentFiles count: {config.RecentFiles.Count}");
+                    return config;
+                }
+                else
+                {
+                    Logger.Log("Config file does not exist. Using defaults.");
                 }
             }
-            catch (Exception) { }
+            catch (Exception ex)
+            {
+                Logger.Log($"Failed to load config.json: {ex}");
+            }
 
+            Logger.Log("Returning default AppConfig instance.");
             return new AppConfig();
         }
+
+        private static object? GetDefaultValue(string propertyName) =>
+            propertyName switch
+            {
+                nameof(AppConfig.ThemeKey) => DefaultConfig.ThemeKey,
+                nameof(AppConfig.AccentColor) => DefaultConfig.AccentColor,
+                nameof(AppConfig.DiscordRPCEnabled) => DefaultConfig.DiscordRPCEnabled,
+                nameof(AppConfig.DiscordRPCPrivacy) => DefaultConfig.DiscordRPCPrivacy,
+                nameof(AppConfig.DiscordRPCPrivacyString) => DefaultConfig.DiscordRPCPrivacyString,
+                nameof(AppConfig.UseWine) => DefaultConfig.UseWine,
+                nameof(AppConfig.AutoSaveInterval) => DefaultConfig.AutoSaveInterval,
+                nameof(AppConfig.AutoSaveEnabled) => DefaultConfig.AutoSaveEnabled,
+                nameof(AppConfig.AutoUpdateEnabled) => DefaultConfig.AutoUpdateEnabled,
+                nameof(AppConfig.DefaultColumnWidth) => DefaultConfig.DefaultColumnWidth,
+                nameof(AppConfig.RestoreLastSession) => DefaultConfig.RestoreLastSession,
+                nameof(AppConfig.OpenSaveFolderAfterSaving) => DefaultConfig.OpenSaveFolderAfterSaving,
+                nameof(AppConfig.EnableDebugLogging) => DefaultConfig.EnableDebugLogging,
+                nameof(AppConfig.RecentFiles) => new List<string>(),
+                nameof(AppConfig.LastSessionFiles) => new List<string>(),
+                nameof(AppConfig.EditorFontFamily) => DefaultConfig.EditorFontFamily,
+                nameof(AppConfig.EditorFontSize) => DefaultConfig.EditorFontSize,
+                nameof(AppConfig.EnableRTL) => DefaultConfig.EnableRTL,
+                _ => null,
+            };
 
         public void Save()
         {

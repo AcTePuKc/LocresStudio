@@ -29,10 +29,7 @@ namespace UnrealLocresEditor.Utils
 
         public async Task<bool> CheckAndDownloadUnrealLocres()
         {
-            var unrealLocresExePath = Path.Combine(
-                Path.GetDirectoryName(Environment.ProcessPath),
-                "UnrealLocres.exe"
-            );
+            var unrealLocresExePath = Path.Combine(GetInstallDirectory(), "UnrealLocres.exe");
             if (!File.Exists(unrealLocresExePath))
             {
                 return await PromptAndDownloadUnrealLocres();
@@ -100,7 +97,7 @@ namespace UnrealLocresEditor.Utils
                     );
 
                     var response = await client.GetByteArrayAsync(UnrealLocresReleaseUrl);
-                    var exeDirectory = Directory.GetCurrentDirectory();
+                    var exeDirectory = GetInstallDirectory();
                     var unrealLocresPath = Path.Combine(exeDirectory, "UnrealLocres.exe");
 
                     await File.WriteAllBytesAsync(unrealLocresPath, response);
@@ -129,27 +126,42 @@ namespace UnrealLocresEditor.Utils
             }
         }
 
-        private TaskCompletionSource<string> _dialogResult;
+        private TaskCompletionSource<string>? _dialogResult;
 
         private async Task<string> ShowCustomDialog(Window dialog)
         {
             _dialogResult = new TaskCompletionSource<string>();
 
-            var buttons = (
-                (StackPanel)((StackPanel)dialog.Content).Children[1]
-            ).Children.OfType<Button>();
+            var rootPanel = dialog.Content as StackPanel;
+            var buttonPanel = rootPanel?.Children.Count > 1 ? rootPanel.Children[1] as StackPanel : null;
+            var buttons = buttonPanel?.Children.OfType<Button>() ?? Enumerable.Empty<Button>();
 
             foreach (var button in buttons)
             {
                 button.Click += (s, e) =>
                 {
-                    _dialogResult.SetResult(((Button)s).Content.ToString());
+                    if (s is Button clickedButton && clickedButton.Content is not null)
+                    {
+                        _dialogResult?.TrySetResult(clickedButton.Content.ToString() ?? "Cancel");
+                    }
+                    else
+                    {
+                        _dialogResult?.TrySetResult("Cancel");
+                    }
+
                     dialog.Close();
                 };
             }
 
+            dialog.Closed += (_, _) => _dialogResult?.TrySetResult("Cancel");
+
             await dialog.ShowDialog(_parentWindow);
             return await _dialogResult.Task;
+        }
+
+        private static string GetInstallDirectory()
+        {
+            return AppContext.BaseDirectory;
         }
     }
 }

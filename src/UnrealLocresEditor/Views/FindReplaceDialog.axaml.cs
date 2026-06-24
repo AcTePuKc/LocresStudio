@@ -13,7 +13,6 @@ namespace UnrealLocresEditor.Views
 {
     public partial class FindReplaceDialog : Window
     {
-
         public FindReplaceDialog()
         {
             AvaloniaXamlLoader.Load(this);
@@ -35,9 +34,12 @@ namespace UnrealLocresEditor.Views
             uiMatchWholeWordCheckBox = this.FindControl<CheckBox>("uiMatchWholeWordCheckBox");
             uiLocresModeCheckBox = this.FindControl<CheckBox>("uiLocresModeCheckBox");
 
-            uiFindButton.Click += FindButton_Click;
-            uiReplaceButton.Click += ReplaceButton_Click;
-            uiReplaceAllButton.Click += ReplaceAllButton_Click;
+            if (uiFindButton != null)
+                uiFindButton.Click += FindButton_Click;
+            if (uiReplaceButton != null)
+                uiReplaceButton.Click += ReplaceButton_Click;
+            if (uiReplaceAllButton != null)
+                uiReplaceAllButton.Click += ReplaceAllButton_Click;
         }
 
         public MainWindow? MainWindow { get; set; }
@@ -48,7 +50,7 @@ namespace UnrealLocresEditor.Views
 
         private void FindButton_Click(object? sender, RoutedEventArgs e)
         {
-            string currentSearchTerm = uiSearchTextBox.Text;
+            string currentSearchTerm = uiSearchTextBox?.Text ?? string.Empty;
             if (currentSearchTerm != _lastSearchTerm)
             {
                 _currentMatchIndex = -1;
@@ -61,6 +63,9 @@ namespace UnrealLocresEditor.Views
 
         private async Task ScrollToSelectedRow(DataGrid dataGrid, int rowIndex, int colIndex)
         {
+            if (MainWindow == null)
+                return;
+
             if (
                 rowIndex < 0
                 || rowIndex >= MainWindow._rows.Count
@@ -83,15 +88,18 @@ namespace UnrealLocresEditor.Views
             if (string.IsNullOrEmpty(searchTerm))
                 return;
 
+            if (MainWindow?._dataGrid == null || MainWindow._rows == null)
+                return;
+
             var dataGrid = MainWindow._dataGrid;
             var items = MainWindow._rows;
 
             if (items == null || dataGrid.Columns.Count == 0)
                 return;
 
-            bool isMatchCase = uiMatchCaseCheckBox.IsChecked ?? false;
-            bool isMatchWholeWord = uiMatchWholeWordCheckBox.IsChecked ?? false;
-            bool isMatchEntireCell = uiMatchCellCheckBox.IsChecked ?? false;
+            bool isMatchCase = uiMatchCaseCheckBox?.IsChecked ?? false;
+            bool isMatchWholeWord = uiMatchWholeWordCheckBox?.IsChecked ?? false;
+            bool isMatchEntireCell = uiMatchCellCheckBox?.IsChecked ?? false;
 
             int rowCount = items.Count;
             int colCount = dataGrid.Columns.Count;
@@ -293,6 +301,9 @@ namespace UnrealLocresEditor.Views
         private int CountTotalMatches(string searchTerm)
         {
             int matchCount = 0;
+            if (MainWindow?._dataGrid == null || MainWindow._rows == null)
+                return 0;
+
             var dataGrid = MainWindow._dataGrid;
             var items = MainWindow._rows;
 
@@ -303,9 +314,9 @@ namespace UnrealLocresEditor.Views
             )
                 return 0;
 
-            bool isMatchCase = uiMatchCaseCheckBox.IsChecked ?? false;
-            bool isMatchWholeWord = uiMatchWholeWordCheckBox.IsChecked ?? false;
-            bool isMatchEntireCell = uiMatchCellCheckBox.IsChecked ?? false;
+            bool isMatchCase = uiMatchCaseCheckBox?.IsChecked ?? false;
+            bool isMatchWholeWord = uiMatchWholeWordCheckBox?.IsChecked ?? false;
+            bool isMatchEntireCell = uiMatchCellCheckBox?.IsChecked ?? false;
 
             foreach (var row in items)
             {
@@ -360,12 +371,15 @@ namespace UnrealLocresEditor.Views
                 var row = MainWindow._dataGrid.SelectedItem as DataRow;
                 if (row != null)
                 {
-                    var searchText = uiSearchTextBox.Text;
-                    var replaceText = uiReplaceTextBox.Text;
-                    bool matchCase = uiMatchCaseCheckBox.IsChecked == true;
-                    bool matchWholeWord = uiMatchWholeWordCheckBox.IsChecked == true;
-                    bool matchCell = uiMatchCellCheckBox.IsChecked == true;
-                    bool locresMode = uiLocresModeCheckBox.IsChecked == true;
+                    var searchText = uiSearchTextBox?.Text ?? string.Empty;
+                    var replaceText = uiReplaceTextBox?.Text ?? string.Empty;
+                    bool matchCase = uiMatchCaseCheckBox?.IsChecked == true;
+                    bool matchWholeWord = uiMatchWholeWordCheckBox?.IsChecked == true;
+                    bool matchCell = uiMatchCellCheckBox?.IsChecked == true;
+                    bool locresMode = uiLocresModeCheckBox?.IsChecked == true;
+
+                    if (string.IsNullOrEmpty(searchText))
+                        return;
 
                     if (locresMode)
                     {
@@ -404,23 +418,23 @@ namespace UnrealLocresEditor.Views
             if (MainWindow?._dataGrid?.ItemsSource == null)
                 return;
 
-            var searchText = uiSearchTextBox.Text;
-            var replaceText = uiReplaceTextBox.Text;
+            var searchText = uiSearchTextBox?.Text ?? string.Empty;
+            var replaceText = uiReplaceTextBox?.Text ?? string.Empty;
             if (string.IsNullOrEmpty(searchText))
                 return;
 
             var items = MainWindow._dataGrid.ItemsSource.Cast<DataRow>().ToList();
             bool matchCase = await Dispatcher.UIThread.InvokeAsync(
-                () => uiMatchCaseCheckBox.IsChecked == true
+                () => uiMatchCaseCheckBox?.IsChecked == true
             );
             bool matchWholeWord = await Dispatcher.UIThread.InvokeAsync(
-                () => uiMatchWholeWordCheckBox.IsChecked == true
+                () => uiMatchWholeWordCheckBox?.IsChecked == true
             );
             bool matchCell = await Dispatcher.UIThread.InvokeAsync(
-                () => uiMatchCellCheckBox.IsChecked == true
+                () => uiMatchCellCheckBox?.IsChecked == true
             );
             bool locresMode = await Dispatcher.UIThread.InvokeAsync(
-                () => uiLocresModeCheckBox.IsChecked == true
+                () => uiLocresModeCheckBox?.IsChecked == true
             );
 
             var tasks = items
@@ -497,6 +511,9 @@ namespace UnrealLocresEditor.Views
             bool matchCell
         )
         {
+            if (row.Values.Length < 3)
+                return;
+
             if (ShouldReplaceInCell(row.Values[1], searchText, matchCase, matchWholeWord, matchCell))
             {
                 row.Values[2] = ReplaceTextAcrossLineBreaks(

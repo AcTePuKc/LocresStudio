@@ -3,3 +3,7 @@
 .vs/UnrealLocresEditor/v17/DocumentLayout.json
 .vs/VSWorkspaceState.json
 *_test*
+.vs/
+artifacts/
+Game.csv
+temp_roundtrip.cs

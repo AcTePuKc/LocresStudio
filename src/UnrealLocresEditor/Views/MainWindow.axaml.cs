@@ -10,6 +10,7 @@ using Avalonia.Media;
 using Avalonia.Platform.Storage;
 using Avalonia.Threading;
 using Avalonia.Styling;
+using Avalonia.VisualTree;
 using CsvHelper;
 using CsvHelper.Configuration;
 using System;
@@ -49,6 +50,10 @@ namespace UnrealLocresEditor.Views
         private AppConfig _appConfig;
         private DiscordService _discordRPC;
         public bool UseWine;
+        private const int MaxRecentFiles = 10;
+        private bool _restoringSession;
+        private bool _isSavingDocument;
+        private bool _suppressNextDirtyMark;
 
         // Misc
         public string csvFile = "";
@@ -94,6 +99,12 @@ namespace UnrealLocresEditor.Views
             // Add these two lines so C# knows about your new XAML tags:
             uiStatusText = this.FindControl<TextBlock>("uiStatusText");
             uiRowCounter = this.FindControl<TextBlock>("uiRowCounter");
+            // Ensure we have a reference to the Recent Files menu item before populating it.
+            try
+            {
+                uiRecentFilesMenuItem = this.FindControl<MenuItem>("uiRecentFilesMenuItem");
+            }
+            catch { }
 
             ApplyEditorSettings();
 
@@ -103,15 +114,10 @@ namespace UnrealLocresEditor.Views
 
             // Keep this! This updates the bar when you click a row.
             _dataGrid.SelectionChanged += (s, e) => UpdateStatusBar();
+            _dataGrid.PointerWheelChanged += DataGrid_PointerWheelChanged;
 
             UseWine = _appConfig.UseWine;
             _discordRPC = new DiscordService();
-
-            // NEW: Clean up old junk from previous crashes
-            CleanupStaleTempDirectories();
-
-            // Clear temp directory at startup
-            GetOrCreateTempDirectory();
 
             this.Loaded += OnWindowLoaded;
             this.Closing += OnWindowClosing;
@@ -120,6 +126,8 @@ namespace UnrealLocresEditor.Views
             _rows = new ObservableCollection<DataRow>();
             DataContext = this;
             _dataGrid.ItemsSource = _rows;
+            RefreshRecentFilesMenu();
+
             Documents.CollectionChanged += Documents_CollectionChanged;
             ConfigureAutoSaveTimer();
 
@@ -231,6 +239,7 @@ namespace UnrealLocresEditor.Views
             }
 
             RefreshUnsavedChangesFlag();
+            PersistSessionState();
             ConfigureAutoSaveTimer();
         }
 
@@ -304,6 +313,9 @@ namespace UnrealLocresEditor.Views
             _rows = _selectedDocument.Rows;
             _dataGrid.ItemsSource = _rows;
             ApplyColumnsForDocument(_selectedDocument);
+            _dataGrid.InvalidateMeasure();
+            _dataGrid.InvalidateArrange();
+            _dataGrid.InvalidateVisual();
 
             _currentLocresFilePath = string.IsNullOrWhiteSpace(_selectedDocument.WorkingPath)
                 ? null
@@ -354,6 +366,8 @@ namespace UnrealLocresEditor.Views
 
             document.HasUnsavedChanges = true;
             _hasUnsavedChanges = true;
+            PersistSessionState();
+            UpdateStatusBar();
         }
 
         private void ClearDocumentDirty(LocresDocument document)
@@ -365,6 +379,8 @@ namespace UnrealLocresEditor.Views
 
             document.HasUnsavedChanges = false;
             RefreshUnsavedChangesFlag();
+            PersistSessionState();
+            UpdateStatusBar();
         }
 
         private void UpdateDiscordPresence(string? path)
@@ -376,6 +392,11 @@ namespace UnrealLocresEditor.Views
         {
             // 1. Check if user cancelled with Escape (we shouldn't save then)
             if (e.EditAction == DataGridEditAction.Cancel) return;
+            if (_isSavingDocument || _suppressNextDirtyMark)
+            {
+                _suppressNextDirtyMark = false;
+                return;
+            }
 
             if (SelectedDocument != null && e.Row.DataContext is DataRow row)
             {
@@ -489,6 +510,8 @@ namespace UnrealLocresEditor.Views
                 MaxItems = 1,
             };
 
+            await RestoreLastSessionAsync();
+
             // Skip update check in Avalonia Designer
             if (Design.IsDesignMode)
             {
@@ -542,8 +565,12 @@ namespace UnrealLocresEditor.Views
             if (_closingHandled)
                 return;
 
+            RefreshUnsavedChangesFlag();
+
             if (_hasUnsavedChanges)
             {
+                var unsavedCount = _documents.Count(d => d.HasUnsavedChanges);
+
                 // Cancel close event
                 e.Cancel = true;
 
@@ -565,8 +592,12 @@ namespace UnrealLocresEditor.Views
                             new TextBlock
                             {
                                 Text = _isSystemShutdown
-                                    ? "The system is shutting down. Do you want to save changes before exiting?"
-                                    : "You have unsaved changes. Do you want to save before closing?",
+                                    ? unsavedCount > 1
+                                        ? $"The system is shutting down. Do you want to save all {unsavedCount} unsaved files before exiting?"
+                                        : "The system is shutting down. Do you want to save changes before exiting?"
+                                    : unsavedCount > 1
+                                        ? $"You have {unsavedCount} unsaved files. Do you want to save them before closing?"
+                                        : "You have unsaved changes. Do you want to save before closing?",
                                 TextWrapping = TextWrapping.Wrap,
                             },
                             new StackPanel
@@ -592,7 +623,7 @@ namespace UnrealLocresEditor.Views
                     case "Save":
                         try
                         {
-                            SaveEditedData();
+                            SaveAllUnsavedDocuments();
                             CompleteClosing(e);
                         }
                         catch (Exception ex)
@@ -621,6 +652,34 @@ namespace UnrealLocresEditor.Views
             }
         }
 
+        private void SaveAllUnsavedDocuments()
+        {
+            var originalDocument = SelectedDocument;
+            var unsavedDocuments = _documents.Where(d => d.HasUnsavedChanges).ToList();
+
+            try
+            {
+                foreach (var document in unsavedDocuments)
+                {
+                    if (SelectedDocument != document)
+                        SelectedDocument = document;
+
+                    SaveEditedData(openExplorer: false);
+                }
+            }
+            finally
+            {
+                if (originalDocument != null && _documents.Contains(originalDocument))
+                {
+                    SelectedDocument = originalDocument;
+                }
+                else if (_documents.Count > 0)
+                {
+                    SelectedDocument = _documents[0];
+                }
+            }
+        }
+
         private void CompleteClosing(WindowClosingEventArgs e)
         {
             _closingHandled = true;
@@ -639,24 +698,6 @@ namespace UnrealLocresEditor.Views
             _autoSaveTimer?.Stop();
             _autoSaveTimer?.Dispose();
             _discordRPC.Dispose();
-
-            // Clean up the temp directory for this instance
-            try
-            {
-                var instanceId = Process.GetCurrentProcess().Id.ToString();
-                var exeDirectory = Path.GetDirectoryName(Environment.ProcessPath);
-                var tempDirectoryName = $".temp-LocresStudio-{instanceId}";
-                var tempDirectoryPath = Path.Combine(exeDirectory, tempDirectoryName);
-
-                if (Directory.Exists(tempDirectoryPath))
-                {
-                    Directory.Delete(tempDirectoryPath, true);
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error cleaning up temp directory: {ex.Message}");
-            }
 
             var window = (Window)this;
             window.Close();
@@ -724,6 +765,14 @@ namespace UnrealLocresEditor.Views
             {
                 switch (e.Key)
                 {
+                    case Key.S:
+                        SaveMenuItem_Click(sender, new RoutedEventArgs());
+                        e.Handled = true;
+                        break;
+                    case Key.W:
+                        CloseMenuItem_Click(sender, new RoutedEventArgs());
+                        e.Handled = true;
+                        break;
                     case Key.F:
                         ShowFindDialog();
                         break;
@@ -806,6 +855,27 @@ namespace UnrealLocresEditor.Views
             // Handle Ctrl+C / Ctrl+V for copy-pasting when a cell is focused but not being directly edited.
             if (e.KeyModifiers == KeyModifiers.Control)
             {
+                if (e.Key == Key.S)
+                {
+                    SaveMenuItem_Click(sender, new RoutedEventArgs());
+                    e.Handled = true;
+                    return;
+                }
+
+                if (e.Key == Key.W)
+                {
+                    CloseMenuItem_Click(sender, new RoutedEventArgs());
+                    e.Handled = true;
+                    return;
+                }
+
+                if (e.Key == Key.Delete)
+                {
+                    DeleteSelectedRows();
+                    e.Handled = true;
+                    return;
+                }
+
                 var focusedControl = FocusManager.GetFocusedElement() as TextBox;
 
                 // CASE A: Editing a specific text box? Let default copy/paste happen.
@@ -1104,13 +1174,12 @@ namespace UnrealLocresEditor.Views
             return $"{baseName}_{instanceId}{extension}";
         }
 
-        private void CloseMenuItem_Click(object? sender, RoutedEventArgs e)
+        private async void CloseMenuItem_Click(object? sender, RoutedEventArgs e)
         {
             if (SelectedDocument == null)
                 return;
 
-            // TODO: better unsaved changes.
-            _documents.Remove(SelectedDocument);
+            await CloseDocumentAsync(SelectedDocument);
         }
         private async void OpenMenuItem_Click(object sender, RoutedEventArgs e)
         {
@@ -1131,122 +1200,408 @@ namespace UnrealLocresEditor.Views
 
             if (result != null && result.Count > 0)
             {
-                // 1. Get the path the user selected (Local Variable)
                 string originalFilePath = result[0].Path.LocalPath;
+                await OpenLocresFileAsync(originalFilePath);
+            }
+        }
 
-                // Update Discord RPC
-                _discordRPC.UpdatePresence(null);
+        private void DataGrid_PointerWheelChanged(object? sender, PointerWheelEventArgs e)
+        {
+            if (_rows == null || _rows.Count == 0 || e.Delta.Y >= 0)
+                return;
 
-                // 2. Prepare unique CSV filename
-                var instanceId = Process.GetCurrentProcess().Id;
+            Dispatcher.UIThread.Post(EnsureLastRowVisibleAfterWheelScroll, DispatcherPriority.Background);
+        }
 
-                // FIX: Add a short Random ID so "101.locres" doesn't clash with another "101.locres"
-                var uniqueId = Guid.NewGuid().ToString("N").Substring(0, 6);
+        private void EnsureLastRowVisibleAfterWheelScroll()
+        {
+            if (_rows == null || _rows.Count == 0)
+                return;
 
-                var csvFileName = $"{Path.GetFileNameWithoutExtension(originalFilePath)}_{instanceId}_{uniqueId}.csv";
-                csvFile = Path.Combine(Directory.GetCurrentDirectory(), csvFileName);
+            var scrollViewer = _dataGrid
+                .GetVisualDescendants()
+                .OfType<ScrollViewer>()
+                .FirstOrDefault();
 
-                // Safety: Delete any old CSV with this name
-                if (File.Exists(csvFile))
+            if (scrollViewer == null)
+                return;
+
+            var remaining = scrollViewer.Extent.Height - (scrollViewer.Offset.Y + scrollViewer.Viewport.Height);
+            if (remaining > 48.0)
+                return;
+
+            var lastRow = _rows[_rows.Count - 1];
+            _dataGrid.ScrollIntoView(lastRow, null);
+
+            // Avalonia's DataGrid wheel scrolling can stop one row early on Windows with DPI scaling.
+            // Post a second pass after layout so the final row is forced into view near the bottom edge.
+            Dispatcher.UIThread.Post(() => _dataGrid.ScrollIntoView(lastRow, null), DispatcherPriority.Loaded);
+        }
+
+        private async Task OpenLocresFileAsync(string originalFilePath)
+        {
+            if (string.IsNullOrWhiteSpace(originalFilePath))
+                return;
+
+            var existingDocument = _documents.FirstOrDefault(doc =>
+                string.Equals(doc.OriginalPath, originalFilePath, StringComparison.OrdinalIgnoreCase)
+            );
+            if (existingDocument != null)
+            {
+                AddRecentFile(originalFilePath);
+                SelectedDocument = existingDocument;
+                _dataGrid.SelectedItem = existingDocument.Rows.FirstOrDefault();
+                UpdateStatusBar();
+                return;
+            }
+
+            if (!File.Exists(originalFilePath))
+            {
+                RemoveRecentFile(originalFilePath);
+                _notificationManager?.Show(
+                    new Notification(
+                        "Missing File",
+                        $"Could not find {Path.GetFileName(originalFilePath)}.",
+                        NotificationType.Warning
+                    )
+                );
+                return;
+            }
+
+            // Update Discord RPC
+            _discordRPC.UpdatePresence(null);
+
+            try
+            {
+                AddRecentFile(originalFilePath);
+                var locresData = LocresFileData.Read(originalFilePath);
+                var document = CreateDocumentFromLocres(originalFilePath, locresData);
+                _documents.Add(document);
+                _currentLocresFilePath = originalFilePath;
+                SelectedDocument = document;
+            }
+            catch (Exception ex)
+            {
+                _notificationManager.Show(new Notification("Error Opening File", ex.Message, NotificationType.Error));
+            }
+        }
+
+        private void AddRecentFile(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+                return;
+
+            _appConfig = AppConfig.Reload();
+            _appConfig.RecentFiles ??= new List<string>();
+            _appConfig.RecentFiles.RemoveAll(path =>
+                string.Equals(path, filePath, StringComparison.OrdinalIgnoreCase)
+            );
+            _appConfig.RecentFiles.Insert(0, filePath);
+
+            if (_appConfig.RecentFiles.Count > MaxRecentFiles)
+                _appConfig.RecentFiles = _appConfig.RecentFiles.Take(MaxRecentFiles).ToList();
+
+            _appConfig.Save();
+            RefreshRecentFilesMenu();
+        }
+
+        private void RemoveRecentFile(string filePath)
+        {
+            if (string.IsNullOrWhiteSpace(filePath))
+                return;
+
+            _appConfig = AppConfig.Reload();
+            _appConfig.RecentFiles ??= new List<string>();
+            _appConfig.RecentFiles.RemoveAll(path =>
+                string.Equals(path, filePath, StringComparison.OrdinalIgnoreCase)
+            );
+            _appConfig.Save();
+            RefreshRecentFilesMenu();
+        }
+
+        private void RefreshRecentFilesMenu()
+        {
+            if (uiRecentFilesMenuItem == null)
+            {
+                Logger.Log("uiRecentFilesMenuItem is null in RefreshRecentFilesMenu");
+                return;
+            }
+
+            _appConfig = AppConfig.Reload();
+            Logger.Log($"Reloaded AppConfig. Raw RecentFiles count: {_appConfig.RecentFiles?.Count ?? 0}");
+            var recentFiles = (_appConfig.RecentFiles ?? new List<string>())
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(MaxRecentFiles)
+                .ToList();
+
+            Logger.Log($"Filtered recentFiles list count: {recentFiles.Count}");
+
+            if (recentFiles.Count != (_appConfig.RecentFiles?.Count ?? 0))
+            {
+                _appConfig.RecentFiles = recentFiles;
+                _appConfig.Save();
+                Logger.Log("AppConfig.RecentFiles trimmed and saved.");
+            }
+
+            var menuItems = BuildRecentFileMenuItems(recentFiles);
+            Logger.Log($"Built {menuItems.Count} recent file menu items. Assigning to uiRecentFilesMenuItem.ItemsSource");
+            uiRecentFilesMenuItem.ItemsSource = menuItems;
+        }
+
+        private List<object> BuildRecentFileMenuItems(List<string> recentFiles)
+        {
+            var items = new List<object>();
+
+            if (recentFiles.Count == 0)
+            {
+                items.Add(new MenuItem
                 {
-                    File.Delete(csvFile);
+                    Header = "(Empty)",
+                    IsEnabled = false,
+                });
+            }
+            else
+            {
+                foreach (var recentFile in recentFiles.Select((path, index) => new { path, index }))
+                {
+                    var fileName = Path.GetFileName(recentFile.path);
+                    var exists = File.Exists(recentFile.path);
+                    Logger.Log($"RecentFiles entry #{recentFile.index + 1}: '{recentFile.path}' exists={exists}");
+                    var item = new MenuItem
+                    {
+                        Header = exists
+                            ? $"{recentFile.index + 1}. {fileName}"
+                            : $"{recentFile.index + 1}. {fileName} (missing)",
+                        CommandParameter = recentFile.path,
+                    };
+                    ToolTip.SetTip(item, recentFile.path);
+                    item.Click += RecentFileMenuItem_Click;
+                    items.Add(item);
                 }
 
-                // Check if UnrealLocres.exe exists
-                var downloader = new UnrealLocresDownloader(this, _notificationManager);
-                if (!await downloader.CheckAndDownloadUnrealLocres())
-                {
-                    return;
-                }
+                items.Add(new Separator());
 
-                // 3. Run UnrealLocres.exe
-                var process = new Process
+                var removeItem = new MenuItem
                 {
-                    StartInfo = ProcessUtils.GetProcessStartInfo(
-                        command: "export",
-                        locresFilePath: originalFilePath,
-                        useWine: this.UseWine,
-                        csvFileName: csvFileName
-                    ),
+                    Header = "Remove from Recent Files",
                 };
 
-                process.Start();
-                await process.WaitForExitAsync(); // Non-blocking wait
-
-                if (process.ExitCode == 0)
+                foreach (var recentFile in recentFiles)
                 {
+                    var fileName = Path.GetFileName(recentFile);
+                    var removeRecentItem = new MenuItem
+                    {
+                        Header = fileName,
+                        Tag = recentFile,
+                    };
+                    ToolTip.SetTip(removeRecentItem, recentFile);
+                    removeRecentItem.Click += RemoveRecentFileMenuItem_Click;
+                    removeItem.Items.Add(removeRecentItem);
+                }
+
+                items.Add(removeItem);
+                items.Add(CreateMenuItem("Clear Recent Files", ClearRecentFilesMenuItem_Click));
+            }
+
+            return items;
+        }
+
+        private MenuItem BuildImportExportMenu()
+        {
+            var importExportItem = new MenuItem
+            {
+                Header = "Import / Export Data",
+            };
+
+            importExportItem.ItemsSource = new List<object>
+            {
+                CreateMenuItem("Import CSV (Spreadsheet)", OpenSpreadsheetMenuItem_Click),
+                CreateMenuItem("Import TXT (TSV)", ImportTxtMenuItem_Click),
+                new Separator(),
+                CreateMenuItem("Export to CSV", SaveAsMenuItem_Click),
+                CreateMenuItem("Export to TXT (TSV)", ExportTxtMenuItem_Click),
+            };
+
+            return importExportItem;
+        }
+
+        private MenuItem CreateMenuHeader(string header) =>
+            new()
+            {
+                Header = header,
+                IsEnabled = false,
+            };
+
+        private MenuItem CreateMenuItem(string header, EventHandler<RoutedEventArgs> clickHandler, string? inputGesture = null)
+        {
+            var item = new MenuItem
+            {
+                Header = header,
+            };
+
+            if (!string.IsNullOrWhiteSpace(inputGesture))
+            {
+                item.InputGesture = KeyGesture.Parse(inputGesture);
+            }
+
+            item.Click += clickHandler;
+            return item;
+        }
+
+        private async void RecentFileMenuItem_Click(object? sender, RoutedEventArgs e)
+        {
+            if (sender is not MenuItem menuItem || menuItem.CommandParameter is not string filePath)
+                return;
+
+            await OpenLocresFileAsync(filePath);
+        }
+
+        private void ClearRecentFilesMenuItem_Click(object? sender, RoutedEventArgs e)
+        {
+            _appConfig = AppConfig.Reload();
+            _appConfig.RecentFiles ??= new List<string>();
+            _appConfig.RecentFiles.Clear();
+            _appConfig.Save();
+            RefreshRecentFilesMenu();
+        }
+
+        private void RemoveRecentFileMenuItem_Click(object? sender, RoutedEventArgs e)
+        {
+            if (sender is not MenuItem menuItem || menuItem.Tag is not string filePath)
+                return;
+
+            RemoveRecentFile(filePath);
+        }
+
+        private void PersistSessionState()
+        {
+            if (_restoringSession)
+                return;
+
+            _appConfig = AppConfig.Reload();
+            _appConfig.RecentFiles ??= new List<string>();
+            _appConfig.LastSessionFiles = _documents
+                .Select(doc => doc.OriginalPath)
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(MaxRecentFiles)
+                .ToList();
+            _appConfig.Save();
+        }
+
+        private async Task RestoreLastSessionAsync()
+        {
+            if (!_appConfig.RestoreLastSession || _documents.Count > 0)
+                return;
+
+            var sessionFiles = (_appConfig.LastSessionFiles ?? new List<string>())
+                .Where(path => !string.IsNullOrWhiteSpace(path))
+                .Where(File.Exists)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(MaxRecentFiles)
+                .ToList();
+
+            if (sessionFiles.Count == 0)
+                return;
+
+            _restoringSession = true;
+            try
+            {
+                foreach (var filePath in sessionFiles)
+                {
+                    await OpenLocresFileAsync(filePath);
+                }
+            }
+            finally
+            {
+                _restoringSession = false;
+                PersistSessionState();
+            }
+        }
+
+        private async Task CloseDocumentAsync(LocresDocument document)
+        {
+            if (document == null)
+                return;
+
+            if (document.HasUnsavedChanges)
+            {
+                var closeResult = await ShowCloseDocumentDialogAsync(document);
+                if (closeResult == "Cancel")
+                    return;
+
+                if (closeResult == "Save")
+                {
+                    var originalDocument = SelectedDocument;
                     try
                     {
-                        // 4. Verify CSV creation (Handle tool ignoring custom name)
-                        if (!File.Exists(csvFile))
-                        {
-                            // Check for the default name (e.g., Game.csv)
-                            var defaultCsvFile = Path.Combine(
-                                Directory.GetCurrentDirectory(),
-                                $"{Path.GetFileNameWithoutExtension(originalFilePath)}.csv"
-                            );
+                        if (SelectedDocument != document)
+                            SelectedDocument = document;
 
-                            if (File.Exists(defaultCsvFile))
-                            {
-                                // Rename it to our unique name
-                                File.Move(defaultCsvFile, csvFile, overwrite: true);
-                            }
-                            else
-                            {
-                                _notificationManager.Show(new Notification("Error", "CSV file not found after export.", NotificationType.Error));
-                                return;
-                            }
-                        }
-
-                        // 5. Create a specific working copy of the .locres file
-                        // This ensures every opened file has a unique path in the temp folder,
-                        // preventing tabs from overwriting each other.
-                        var importedLocresDir = GetOrCreateTempDirectory();
-
-                        // Add the uniqueId here too!
-                        var uniqueLocresFileName = $"{Path.GetFileNameWithoutExtension(originalFilePath)}_{instanceId}_{uniqueId}{Path.GetExtension(originalFilePath)}";
-                        var importedLocresPath = Path.Combine(importedLocresDir, uniqueLocresFileName);
-
-                        File.Copy(originalFilePath, importedLocresPath, true);
-
-                        // Update global tracking (optional, but LoadCsv handles the critical part now)
-                        _currentLocresFilePath = importedLocresPath;
-
-                        // 6. Load data into the tab
-                        LoadCsv(csvFile, importedLocresPath, originalFilePath);
-                    }
-                    catch (Exception ex)
-                    {
-                        _notificationManager.Show(new Notification("Error Opening File", ex.Message, NotificationType.Error));
+                        SaveEditedData(openExplorer: false);
                     }
                     finally
                     {
-                        // Cleanup temp CSV
-                        if (File.Exists(csvFile))
-                        {
-                            File.Delete(csvFile);
-                        }
-                    }
-                }
-                else
-                {
-                    // Handle Process Failure
-                    var output = await process.StandardOutput.ReadToEndAsync();
-                    Console.WriteLine($"Error reading locres data: {output}");
-                    _notificationManager.Show(
-                        new Notification(
-                            "Error reading locres data:",
-                            output,
-                            NotificationType.Error
-                        )
-                    );
-
-                    if (File.Exists(csvFile))
-                    {
-                        File.Delete(csvFile);
+                        if (originalDocument != null && _documents.Contains(originalDocument))
+                            SelectedDocument = originalDocument;
                     }
                 }
             }
+
+            _documents.Remove(document);
+        }
+
+        private async Task<string> ShowCloseDocumentDialogAsync(LocresDocument document)
+        {
+            var dialog = new Window
+            {
+                Title = "Unsaved Changes",
+                Width = 420,
+                Height = 160,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Content = new StackPanel
+                {
+                    Margin = new Thickness(20),
+                    Spacing = 20,
+                    Children =
+                    {
+                        new TextBlock
+                        {
+                            Text = $"{document.DisplayName} has unsaved changes. Save before closing this tab?",
+                            TextWrapping = TextWrapping.Wrap,
+                        },
+                        new StackPanel
+                        {
+                            Orientation = Orientation.Horizontal,
+                            Spacing = 10,
+                            HorizontalAlignment = HorizontalAlignment.Center,
+                            Children =
+                            {
+                                new Button { Content = "Save" },
+                                new Button { Content = "Don't Save" },
+                                new Button { Content = "Cancel" },
+                            },
+                        },
+                    },
+                },
+            };
+
+            var tcs = new TaskCompletionSource<string>();
+            var rootPanel = dialog.Content as StackPanel;
+            var buttonPanel = rootPanel?.Children.Count > 1 ? rootPanel.Children[1] as StackPanel : null;
+            var buttons = buttonPanel?.Children.OfType<Button>().ToList();
+
+            if (buttons == null || buttons.Count < 3)
+                return "Cancel";
+
+            buttons[0].Click += (_, _) => { tcs.TrySetResult("Save"); dialog.Close(); };
+            buttons[1].Click += (_, _) => { tcs.TrySetResult("Don't Save"); dialog.Close(); };
+            buttons[2].Click += (_, _) => { tcs.TrySetResult("Cancel"); dialog.Close(); };
+            dialog.Closed += (_, _) => tcs.TrySetResult("Cancel");
+
+            await dialog.ShowDialog(this);
+            return await tcs.Task;
         }
 
         // Change signature to accept locresPath
@@ -1258,8 +1613,15 @@ namespace UnrealLocresEditor.Views
                 var tempRows = new ObservableCollection<DataRow>();
                 var tempHeaders = new List<string>();
 
+                var csvConfig = new CsvConfiguration(CultureInfo.InvariantCulture)
+                {
+                    BadDataFound = null,
+                    MissingFieldFound = null,
+                    HeaderValidated = null,
+                };
+
                 using (var reader = new StreamReader(csvFilePath))
-                using (var csv = new CsvReader(reader, new CsvConfiguration(CultureInfo.InvariantCulture)))
+                using (var csv = new CsvReader(reader, csvConfig))
                 {
                     bool isFirstRow = true;
                     while (csv.Read())
@@ -1274,6 +1636,15 @@ namespace UnrealLocresEditor.Views
                         }
                         else
                         {
+                            if (stringValues.Length < tempHeaders.Count)
+                            {
+                                Array.Resize(ref stringValues, tempHeaders.Count);
+                                for (int i = 0; i < stringValues.Length; i++)
+                                {
+                                    stringValues[i] ??= string.Empty;
+                                }
+                            }
+
                             var key = stringValues[0];
                             var isNew = _newKeySet != null && _newKeySet.Contains(key);
                             tempRows.Add(new DataRow { Values = stringValues, IsNewKey = isNew });
@@ -1286,6 +1657,12 @@ namespace UnrealLocresEditor.Views
                 var doc = _documents.FirstOrDefault(d =>
                         string.Equals(d.WorkingPath, locresPath, StringComparison.OrdinalIgnoreCase));
 
+                if (doc == null && !string.IsNullOrWhiteSpace(originalUserPath))
+                {
+                    doc = _documents.FirstOrDefault(d =>
+                        string.Equals(d.OriginalPath, originalUserPath, StringComparison.OrdinalIgnoreCase));
+                }
+
                 if (doc == null)
                 {
 
@@ -1296,6 +1673,20 @@ namespace UnrealLocresEditor.Views
                     doc.WorkingPath = locresPath;
 
                     _documents.Add(doc);
+                }
+                else
+                {
+                    doc.WorkingPath = locresPath;
+                }
+
+                if (doc.BaselineKeys.Count == 0 && tempHeaders.Count > 0)
+                {
+                    doc.BaselineKeys = new HashSet<string>(
+                        tempRows
+                            .Select(row => row.Values.Length > 0 ? row.Values[0] : string.Empty)
+                            .Where(key => !string.IsNullOrWhiteSpace(key)),
+                        StringComparer.Ordinal
+                    );
                 }
 
                 // 3. UPDATE DOCUMENT DATA
@@ -1525,9 +1916,10 @@ namespace UnrealLocresEditor.Views
                     _dataGrid.InvalidateVisual();
                     if (matchCount > 0)
                     {
-                        _hasUnsavedChanges = true;
-                        if (SelectedDocument != null) SelectedDocument.HasUnsavedChanges = true;
-                        RefreshUnsavedChangesFlag();
+                        if (SelectedDocument != null)
+                        {
+                            MarkDocumentDirty(SelectedDocument);
+                        }
                         _notificationManager.Show(new Notification("Import Successful", $"Updated {matchCount} rows from {(isOldFormat ? "Old Format" : "TSV")}.", NotificationType.Success));
                     }
                     else
@@ -1556,7 +1948,7 @@ namespace UnrealLocresEditor.Views
             }
             if (_rows != null && _rows.Count > 0)
             {
-                SaveEditedData(true); // Saves, and opens save location in file explorer with 'true'.
+                SaveEditedData(AppConfig.Instance.OpenSaveFolderAfterSaving);
             }
             else
             {
@@ -1584,114 +1976,128 @@ namespace UnrealLocresEditor.Views
                 return;
             }
 
-            var exeDirectory = AppContext.BaseDirectory;
-            var csvFileName = GetUniqueFileName(
-                Path.GetFileNameWithoutExtension(_currentLocresFilePath) + "_edited",
-                ".csv"
-            );
-            var csvFile = Path.Combine(exeDirectory, csvFileName);
-
-            // Save edited data to CSV
-            using (var writer = new StreamWriter(csvFile, false, Encoding.UTF8))
-            using (
-                var csv = new CsvWriter(writer, new CsvConfiguration(CultureInfo.InvariantCulture))
-            )
+            if (SelectedDocument?.LocresData == null)
             {
-                for (int i = 0; i < _dataGrid.Columns.Count; i++)
-                {
-                    csv.WriteField(((DataGridTextColumn)_dataGrid.Columns[i]).Header);
-                }
-                csv.NextRecord();
-
-                foreach (DataRow row in _rows)
-                {
-                    for (int i = 0; i < row.Values.Length; i++)
-                    {
-                        csv.WriteField(row.Values[i]);
-                    }
-                    csv.NextRecord();
-                }
+                _notificationManager.Show(
+                    new Notification(
+                        "Error",
+                        "The current document is not loaded as a locres file.",
+                        NotificationType.Error
+                    )
+                );
+                return;
             }
 
-            // Run UnrealLocres.exe to import edited CSV
-            var process = new Process
+            var destinationFile = SelectedDocument.OriginalPath;
+            var locresData = BuildLocresDataFromRows(SelectedDocument);
+
+            try
             {
-                StartInfo = ProcessUtils.GetProcessStartInfo(
-                    command: "import",
-                    locresFilePath: _currentLocresFilePath,
-                    useWine: this.UseWine,
-                    csvFileName: csvFileName
-                ),
-            };
+                _suppressNextDirtyMark = true;
+                _isSavingDocument = true;
+                locresData.Write(destinationFile);
+                SelectedDocument.LocresData = locresData;
 
-            process.Start();
-            process.WaitForExit();
-
-            if (process.ExitCode == 0)
-            {
-                var modifiedLocres = _currentLocresFilePath + ".new";
-
-                var newFileName = SelectedDocument.DisplayName;
-
-                // Create export directory with current date and time
-                var exportDirectory = Path.Combine(exeDirectory, "export");
-                var dateTimeFolder = DateTime.Now.ToString("yyyy-MM-dd_HH-mm-ss");
-                var destinationDirectory = Path.Combine(exportDirectory, dateTimeFolder);
-
-                if (!Directory.Exists(destinationDirectory))
+                if (openExplorer)
                 {
-                    Directory.CreateDirectory(destinationDirectory);
-                }
-
-                var destinationFile = Path.Combine(destinationDirectory, newFileName);
-
-                try
-                {
-                    // Move and rename
-                    File.Move(modifiedLocres, destinationFile);
-
-
-                    // Open file explorer/equivalent window to where locres has been saved.
-                    if (openExplorer)
+                    var destinationDirectory = Path.GetDirectoryName(destinationFile);
+                    if (!string.IsNullOrWhiteSpace(destinationDirectory))
                     {
                         OpenDirectoryInExplorer(destinationDirectory);
                     }
+                }
 
-                    _notificationManager.Show(
-                        new Notification(
-                            "Success!",
-                            $"File saved as {Path.GetFileName(destinationFile)} in {destinationDirectory}",
-                            NotificationType.Success
-                        )
-                    );
-                    _hasUnsavedChanges = false;
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"Error moving file: {ex.Message}");
-                    _notificationManager.Show(
-                        new Notification(
-                            "Error moving file:",
-                            $"{ex.Message}",
-                            NotificationType.Error
-                        )
-                    );
-                }
-            }
-            else
-            {
-                Console.WriteLine($"Error importing: {process.StandardOutput.ReadToEnd()}");
                 _notificationManager.Show(
                     new Notification(
-                        "Error importing:",
-                        $"{process.StandardOutput.ReadToEnd()}",
+                        "Success!",
+                        $"Saved {Path.GetFileName(destinationFile)}.",
+                        NotificationType.Success
+                    )
+                );
+
+                ClearDocumentDirty(SelectedDocument);
+            }
+            catch (Exception ex)
+            {
+                _notificationManager.Show(
+                    new Notification(
+                        "Error saving file:",
+                        ex.Message,
                         NotificationType.Error
                     )
                 );
             }
+            finally
+            {
+                _isSavingDocument = false;
+                Dispatcher.UIThread.Post(() => _suppressNextDirtyMark = false, DispatcherPriority.Background);
+            }
+        }
 
-            // Clean up CSV file
-            File.Delete(csvFile);
+        private int GetColumnIndexByHeader(string headerName)
+        {
+            for (int i = 0; i < _dataGrid.Columns.Count; i++)
+            {
+                var header = (_dataGrid.Columns[i] as DataGridTextColumn)?.Header?.ToString();
+                if (string.Equals(header, headerName, StringComparison.OrdinalIgnoreCase))
+                {
+                    return i;
+                }
+            }
+
+            return -1;
+        }
+
+        private LocresFileData BuildLocresDataFromRows(LocresDocument document)
+        {
+            var keyColumnIndex = GetColumnIndexByHeader("key");
+            var sourceColumnIndex = GetColumnIndexByHeader("source");
+            var targetColumnIndex = GetColumnIndexByHeader("target");
+
+            if (keyColumnIndex < 0 || sourceColumnIndex < 0 || targetColumnIndex < 0)
+            {
+                throw new InvalidOperationException("Missing key/source/target columns.");
+            }
+
+            var result = new LocresFileData
+            {
+                Version = document.LocresData?.Version ?? LocresVersion.CityHash,
+            };
+
+            var namespaceMap = new Dictionary<string, LocresNamespaceData>(StringComparer.Ordinal);
+            foreach (var row in document.Rows)
+            {
+                var displayKey = row.Values.Length > keyColumnIndex ? row.Values[keyColumnIndex]?.Trim() : string.Empty;
+                if (string.IsNullOrWhiteSpace(displayKey))
+                    continue;
+
+                var (namespaceName, key) = LocresFileData.ParseDisplayKey(displayKey);
+                if (string.IsNullOrWhiteSpace(key))
+                    continue;
+
+                if (!namespaceMap.TryGetValue(namespaceName, out var namespaceData))
+                {
+                    namespaceData = new LocresNamespaceData { Name = namespaceName };
+                    namespaceMap[namespaceName] = namespaceData;
+                    result.Namespaces.Add(namespaceData);
+                }
+
+                var source = row.Values.Length > sourceColumnIndex ? row.Values[sourceColumnIndex] ?? string.Empty : string.Empty;
+                var target = row.Values.Length > targetColumnIndex ? row.Values[targetColumnIndex] ?? string.Empty : string.Empty;
+                var translation = string.IsNullOrWhiteSpace(target) ? source : target;
+
+                namespaceData.Entries.Add(
+                    new LocresEntryData
+                    {
+                        NamespaceName = namespaceName,
+                        Key = key,
+                        Translation = translation,
+                        SourceHash = row.SourceHash != 0 ? row.SourceHash : LocresCrc32.StrCrc32(source ?? string.Empty),
+                    }
+                );
+            }
+
+            return result;
         }
 
         private async void OpenSpreadsheetMenuItem_Click(object sender, RoutedEventArgs e)
@@ -1722,12 +2128,16 @@ namespace UnrealLocresEditor.Views
             {
                 string filePath = result[0].Path.LocalPath;
 
-                // Pass BOTH the CSV path and the current Locres path
-                LoadCsv(filePath, _currentLocresFilePath);
-
-                csvFile = filePath;
-
-                _discordRPC.UpdatePresence(null);
+                try
+                {
+                    ApplyCsvToCurrentDocument(filePath);
+                    csvFile = filePath;
+                    _discordRPC.UpdatePresence(null);
+                }
+                catch (Exception ex)
+                {
+                    _notificationManager.Show(new Notification("Import Error", ex.Message, NotificationType.Error));
+                }
             }
         }
 
@@ -1821,131 +2231,14 @@ namespace UnrealLocresEditor.Views
 
         private async void MergeMenuItem_Click(object sender, RoutedEventArgs e)
         {
-            // Check if there are unsaved changes before mergin g
-            if (!await MergeSaveChanges())
-                return;
-
-            try
-            {
-                // Pick TARGET file (base file to update)
-                var targetFileResult = await StorageProvider.OpenFilePickerAsync(
-                    new FilePickerOpenOptions
-                    {
-                        Title = "Select BASE Locres File (to be updated)",
-                        FileTypeFilter = new List<FilePickerFileType>
-                        {
-                            new FilePickerFileType("Locres Files")
-                            {
-                                Patterns = new[] { "*.locres" },
-                            },
-                        },
-                        AllowMultiple = false,
-                    }
-                );
-                if (targetFileResult.Count == 0)
-                    return;
-                var targetFile = targetFileResult[0].Path.LocalPath;
-
-                // Pick SOURCE file (with additional keys)
-                var sourceFileResult = await StorageProvider.OpenFilePickerAsync(
-                    new FilePickerOpenOptions
-                    {
-                        Title = "Select ADDITIONAL Locres File (with new keys)",
-                        FileTypeFilter = new List<FilePickerFileType>
-                        {
-                            new FilePickerFileType("Locres Files")
-                            {
-                                Patterns = new[] { "*.locres" },
-                            },
-                        },
-                        AllowMultiple = false,
-                    }
-                );
-                if (sourceFileResult.Count == 0)
-                    return;
-                var sourceFile = sourceFileResult[0].Path.LocalPath;
-
-                // Set output path to a temp file
-                var tempDir = GetOrCreateTempDirectory();
-                var mergedFileName =
-                    $"{Path.GetFileNameWithoutExtension(targetFile)}_merged_{Process.GetCurrentProcess().Id}{Path.GetExtension(targetFile)}";
-                var outputPath = Path.Combine(tempDir, mergedFileName);
-
-                // Check if UnrealLocres exists
-                var downloader = new UnrealLocresDownloader(this, _notificationManager);
-                if (!await downloader.CheckAndDownloadUnrealLocres())
-                    return;
-
-                // Run merge command
-                using (var process = new Process())
-                {
-                    process.StartInfo = ProcessUtils.GetMergeProcessStartInfo(
-                        targetLocresPath: targetFile,
-                        sourceLocresPath: sourceFile,
-                        useWine: UseWine,
-                        outputPath: outputPath
-                    );
-
-                    var outputBuilder = new StringBuilder();
-                    var errorBuilder = new StringBuilder();
-
-                    process.OutputDataReceived += (sender2, args) =>
-                    {
-                        if (args.Data != null)
-                            outputBuilder.AppendLine(args.Data);
-                    };
-                    process.ErrorDataReceived += (sender2, args) =>
-                    {
-                        if (args.Data != null)
-                            errorBuilder.AppendLine(args.Data);
-                    };
-
-                    process.Start();
-                    process.BeginOutputReadLine();
-                    process.BeginErrorReadLine();
-
-                    await Task.Run(() => process.WaitForExit());
-
-                    string output = outputBuilder.ToString();
-                    string error = errorBuilder.ToString();
-
-                    if (process.ExitCode == 0)
-                    {
-                        _notificationManager.Show(
-                            new Notification(
-                                "Merge Successful",
-                                $"Files merged successfully!\nOpening merged file...",
-                                NotificationType.Success
-                            )
-                        );
-
-                        // Highlight new keys
-                        await HighlightNewKeysAndOpen(targetFile, outputPath);
-                    }
-                    else
-                    {
-                        _notificationManager.Show(
-                            new Notification(
-                                "Merge Failed",
-                                $"Error merging files:\nExit Code: {process.ExitCode}\nOutput: {output}\nError: {error}",
-                                NotificationType.Error
-                            )
-                        );
-                    }
-                }
-            }
-            catch (Exception ex)
-            {
-                _notificationManager.Show(
-                    new Notification(
-                        "Merge Error",
-                        $"Unexpected error: {ex.Message}",
-                        NotificationType.Error
-                    )
-                );
-
-                Console.WriteLine($"Error during merge operation: {ex}");
-            }
+            await Task.CompletedTask;
+            _notificationManager.Show(
+                new Notification(
+                    "Merge Unavailable",
+                    "Merge is temporarily disabled while locres operations are moved to the native in-app implementation.",
+                    NotificationType.Information
+                )
+            );
         }
 
         private async Task HighlightNewKeysAndOpen(string targetLocresPath, string mergedLocresPath)
@@ -1965,7 +2258,7 @@ namespace UnrealLocresEditor.Views
                         command: "export",
                         locresFilePath: targetLocresPath,
                         useWine: this.UseWine,
-                        csvFileName: "target.csv"
+                        csvFilePath: "target.csv"
                     ),
                 };
 
@@ -2034,7 +2327,7 @@ namespace UnrealLocresEditor.Views
                         command: "export",
                         locresFilePath: mergedLocresPath,
                         useWine: this.UseWine,
-                        csvFileName: "merged.csv"
+                        csvFilePath: "merged.csv"
                     ),
                 };
 
@@ -2485,8 +2778,14 @@ namespace UnrealLocresEditor.Views
             };
 
             var tcs = new TaskCompletionSource<string>();
-            var buttons = ((StackPanel)((StackPanel)dialog.Content).Children[1]).Children;
-            ((Avalonia.Controls.Button)buttons[0]).Click += (s, e) =>
+            var rootPanel = dialog.Content as StackPanel;
+            var buttonPanel = rootPanel?.Children.Count > 1 ? rootPanel.Children[1] as StackPanel : null;
+            var buttons = buttonPanel?.Children.OfType<Avalonia.Controls.Button>().ToList();
+
+            if (buttons == null || buttons.Count < 3)
+                return false;
+
+            buttons[0].Click += (s, e) =>
             {
                 try
                 {
@@ -2507,16 +2806,18 @@ namespace UnrealLocresEditor.Views
                     dialog.Close();
                 }
             };
-            ((Avalonia.Controls.Button)buttons[1]).Click += (s, e) =>
+            buttons[1].Click += (s, e) =>
             {
                 tcs.SetResult("Don't Save");
                 dialog.Close();
             };
-            ((Avalonia.Controls.Button)buttons[2]).Click += (s, e) =>
+            buttons[2].Click += (s, e) =>
             {
                 tcs.SetResult("Cancel");
                 dialog.Close();
             };
+
+            dialog.Closed += (_, _) => tcs.TrySetResult("Cancel");
 
             await dialog.ShowDialog(this);
             var result = await tcs.Task;
@@ -2566,5 +2867,426 @@ namespace UnrealLocresEditor.Views
                 );
             }
         }
+
+        private LocresDocument CreateDocumentFromLocres(string originalFilePath, LocresFileData locresData)
+        {
+            var document = new LocresDocument(originalFilePath)
+            {
+                WorkingPath = originalFilePath,
+                LocresData = locresData,
+                HasUnsavedChanges = false,
+            };
+
+            document.ColumnHeaders.Clear();
+            document.ColumnHeaders.Add("key");
+            document.ColumnHeaders.Add("source");
+            document.ColumnHeaders.Add("target");
+
+            document.BaselineKeys = new HashSet<string>(
+                locresData
+                    .EnumerateEntries()
+                    .Select(entry => LocresFileData.ComposeDisplayKey(entry.NamespaceName, entry.Key)),
+                StringComparer.Ordinal
+            );
+
+            foreach (var entry in locresData.EnumerateEntries())
+            {
+                document.Rows.Add(
+                    new DataRow
+                    {
+                        Values = new[]
+                        {
+                            LocresFileData.ComposeDisplayKey(entry.NamespaceName, entry.Key),
+                            entry.Translation,
+                            string.Empty,
+                        },
+                        SourceHash = entry.SourceHash,
+                    }
+                );
+            }
+
+            return document;
+        }
+
+        private void ApplyCsvToCurrentDocument(string csvFilePath)
+        {
+            if (SelectedDocument == null)
+            {
+                throw new InvalidOperationException("Please open a locres file first.");
+            }
+
+            var importedRows = ReadCsvRows(csvFilePath);
+            var keyIndex = GetColumnIndexByHeader("key");
+            var sourceIndex = GetColumnIndexByHeader("source");
+            var targetIndex = GetColumnIndexByHeader("target");
+
+            if (keyIndex < 0 || sourceIndex < 0 || targetIndex < 0)
+            {
+                throw new InvalidOperationException("The current document is missing key/source/target columns.");
+            }
+
+            var existingRows = new Dictionary<string, DataRow>(StringComparer.Ordinal);
+            var duplicateExistingKeys = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var row in SelectedDocument.Rows)
+            {
+                var rawKey = row.Values.Length > keyIndex ? row.Values[keyIndex] : string.Empty;
+                var normalizedKey = NormalizeDisplayKey(rawKey);
+                if (string.IsNullOrWhiteSpace(normalizedKey))
+                    continue;
+
+                if (!existingRows.TryAdd(normalizedKey, row))
+                {
+                    duplicateExistingKeys.Add(normalizedKey);
+                }
+            }
+
+            if (duplicateExistingKeys.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"The current document contains duplicate key(s): {string.Join(", ", duplicateExistingKeys.Take(5))}"
+                );
+            }
+
+            var replacementRows = new List<DataRow>();
+            var changedCount = 0;
+            var addedCount = 0;
+            var importedSeenKeys = new HashSet<string>(StringComparer.Ordinal);
+            var duplicateImportedKeys = new HashSet<string>(StringComparer.Ordinal);
+
+            foreach (var importedRow in importedRows)
+            {
+                var importedKey = importedRow.Values.Length > 0 ? importedRow.Values[0] : string.Empty;
+                var normalizedImportedKey = NormalizeDisplayKey(importedKey);
+                if (string.IsNullOrWhiteSpace(normalizedImportedKey))
+                    continue;
+
+                if (!importedSeenKeys.Add(normalizedImportedKey))
+                {
+                    duplicateImportedKeys.Add(normalizedImportedKey);
+                    continue;
+                }
+
+                var importedSource = importedRow.Values.Length > 1 ? importedRow.Values[1] ?? string.Empty : string.Empty;
+                var importedTarget = importedRow.Values.Length > 2 ? importedRow.Values[2] ?? string.Empty : string.Empty;
+
+                if (existingRows.TryGetValue(normalizedImportedKey, out var existingRow))
+                {
+                    var sourceToUse = string.IsNullOrWhiteSpace(importedSource)
+                        && existingRow.Values.Length > sourceIndex
+                        ? existingRow.Values[sourceIndex] ?? string.Empty
+                        : importedSource;
+
+                    var replacementRow = new DataRow
+                    {
+                        Values = new[] { normalizedImportedKey, sourceToUse, importedTarget },
+                        SourceHash = existingRow.SourceHash != 0
+                            ? existingRow.SourceHash
+                            : LocresCrc32.StrCrc32(sourceToUse),
+                    };
+
+                    replacementRows.Add(replacementRow);
+
+                    var sourceChanged = existingRow.Values.Length <= sourceIndex
+                        || existingRow.Values[sourceIndex] != sourceToUse;
+                    var targetChanged = existingRow.Values.Length <= targetIndex
+                        || existingRow.Values[targetIndex] != importedTarget;
+                    if (sourceChanged || targetChanged)
+                    {
+                        changedCount++;
+                    }
+
+                    continue;
+                }
+
+                replacementRows.Add(
+                    new DataRow
+                    {
+                        Values = new[] { normalizedImportedKey, importedSource, importedTarget },
+                        SourceHash = LocresCrc32.StrCrc32(importedSource),
+                    }
+                );
+                addedCount++;
+            }
+
+            if (duplicateImportedKeys.Count > 0)
+            {
+                throw new InvalidOperationException(
+                    $"The imported CSV contains duplicate key(s): {string.Join(", ", duplicateImportedKeys.Take(5))}"
+                );
+            }
+
+            var removedCount = SelectedDocument.Rows.Count - replacementRows.Count + addedCount;
+            SelectedDocument.Rows.Clear();
+            foreach (var row in replacementRows)
+            {
+                SelectedDocument.Rows.Add(row);
+            }
+
+            _rows = SelectedDocument.Rows;
+            _dataGrid.ItemsSource = _rows;
+            _dataGrid.InvalidateMeasure();
+            _dataGrid.InvalidateArrange();
+            _dataGrid.InvalidateVisual();
+
+            if (changedCount > 0 || addedCount > 0 || removedCount > 0)
+            {
+                MarkDocumentDirty(SelectedDocument);
+            }
+
+            UpdateStatusBar();
+            _notificationManager.Show(
+                new Notification(
+                    "CSV Imported",
+                    $"Updated {changedCount} row(s), added {addedCount}, removed {Math.Max(removedCount, 0)}.",
+                    NotificationType.Success
+                )
+            );
+        }
+
+        private List<DataRow> ReadCsvRows(string csvFilePath)
+        {
+            var rows = new List<DataRow>();
+            var csvConfig = new CsvConfiguration(CultureInfo.InvariantCulture)
+            {
+                BadDataFound = null,
+                MissingFieldFound = null,
+                HeaderValidated = null,
+            };
+
+            using var reader = new StreamReader(csvFilePath);
+            using var csv = new CsvReader(reader, csvConfig);
+
+            var headers = Array.Empty<string>();
+            var isFirstRow = true;
+            while (csv.Read())
+            {
+                var values = new string[csv.Parser.Count];
+                for (int i = 0; i < csv.Parser.Count; i++)
+                {
+                    values[i] = csv.GetField(i);
+                }
+
+                if (isFirstRow)
+                {
+                    headers = values;
+                    isFirstRow = false;
+                    continue;
+                }
+
+                if (values.Length < headers.Length)
+                {
+                    Array.Resize(ref values, headers.Length);
+                    for (var i = 0; i < values.Length; i++)
+                    {
+                        values[i] ??= string.Empty;
+                    }
+                }
+
+                rows.Add(new DataRow { Values = values });
+            }
+
+            return rows;
+        }
+
+        private static string NormalizeDisplayKey(string key)
+        {
+            var trimmed = key?.Trim() ?? string.Empty;
+            if (trimmed.StartsWith("/") && trimmed.IndexOf('/', 1) < 0)
+            {
+                return trimmed.Substring(1);
+            }
+
+            return trimmed;
+        }
+
+        private async void AddEmptyRowMenuItem_Click(object? sender, RoutedEventArgs e)
+        {
+            if (SelectedDocument == null || _rows == null || _dataGrid.Columns.Count == 0)
+                return;
+
+            var newEntry = await ShowAddEntryDialogAsync();
+            if (newEntry == null)
+                return;
+
+            var columnCount = _dataGrid.Columns.Count;
+            var values = Enumerable.Repeat(string.Empty, columnCount).ToArray();
+
+            var keyColumnIndex = -1;
+            var sourceColumnIndex = -1;
+            var targetColumnIndex = -1;
+            for (int i = 0; i < _dataGrid.Columns.Count; i++)
+            {
+                var header = (_dataGrid.Columns[i] as DataGridTextColumn)?.Header?.ToString();
+                if (string.Equals(header, "key", StringComparison.OrdinalIgnoreCase))
+                {
+                    keyColumnIndex = i;
+                }
+                else if (string.Equals(header, "source", StringComparison.OrdinalIgnoreCase))
+                {
+                    sourceColumnIndex = i;
+                }
+                else if (string.Equals(header, "target", StringComparison.OrdinalIgnoreCase))
+                {
+                    targetColumnIndex = i;
+                }
+            }
+
+            if (keyColumnIndex >= 0)
+            {
+                values[keyColumnIndex] = newEntry.Key;
+            }
+
+            if (sourceColumnIndex >= 0)
+            {
+                values[sourceColumnIndex] = newEntry.Source;
+            }
+
+            if (targetColumnIndex >= 0)
+            {
+                values[targetColumnIndex] = newEntry.Target;
+            }
+
+            var newRow = new DataRow { Values = values };
+            _rows.Add(newRow);
+            MarkDocumentDirty(SelectedDocument);
+            _dataGrid.SelectedItem = newRow;
+            _dataGrid.ScrollIntoView(newRow, null);
+            UpdateStatusBar();
+        }
+
+        private async Task<NewEntryInput> ShowAddEntryDialogAsync()
+        {
+            var keyTextBox = new TextBox { Watermark = "Key", MinWidth = 320 };
+            var sourceTextBox = new TextBox { Watermark = "Source text", MinWidth = 320 };
+            var targetTextBox = new TextBox { Watermark = "Target text (optional)", MinWidth = 320 };
+
+            var dialog = new Window
+            {
+                Title = "Add New Entry",
+                Width = 560,
+                Height = 360,
+                MinWidth = 520,
+                MinHeight = 340,
+                WindowStartupLocation = WindowStartupLocation.CenterOwner,
+                Content = new ScrollViewer
+                {
+                    Content = new StackPanel
+                    {
+                        Margin = new Thickness(20),
+                        Spacing = 12,
+                        Children =
+                        {
+                            new TextBlock
+                            {
+                                Text = "Enter the new key and source text. Use /Key for the root namespace or Namespace/Key for namespaced entries.",
+                                TextWrapping = TextWrapping.Wrap,
+                            },
+                            new TextBlock { Text = "Key" },
+                            keyTextBox,
+                            new TextBlock { Text = "Source" },
+                            sourceTextBox,
+                            new TextBlock { Text = "Target" },
+                            targetTextBox,
+                            new StackPanel
+                            {
+                                Orientation = Orientation.Horizontal,
+                                Spacing = 10,
+                                HorizontalAlignment = HorizontalAlignment.Right,
+                                Children =
+                                {
+                                    new Button { Content = "Add", MinWidth = 100 },
+                                    new Button { Content = "Cancel", MinWidth = 100 },
+                                },
+                            },
+                        },
+                    },
+                },
+            };
+
+            var tcs = new TaskCompletionSource<NewEntryInput?>();
+            var scrollViewer = dialog.Content as ScrollViewer;
+            var rootPanel = scrollViewer?.Content as StackPanel;
+            var buttonPanel = rootPanel?.Children.Count > 7 ? rootPanel.Children[7] as StackPanel : null;
+            var buttons = buttonPanel?.Children.OfType<Button>().ToList();
+
+            if (buttons == null || buttons.Count < 2)
+                return null;
+
+            buttons[0].Click += (_, _) =>
+            {
+                var key = keyTextBox.Text?.Trim() ?? string.Empty;
+                var source = sourceTextBox.Text?.Trim() ?? string.Empty;
+                var target = targetTextBox.Text ?? string.Empty;
+
+                if (string.IsNullOrWhiteSpace(key))
+                {
+                    _notificationManager.Show(new Notification("Missing Key", "Key is required.", NotificationType.Warning));
+                    return;
+                }
+
+                if (string.IsNullOrWhiteSpace(source))
+                {
+                    _notificationManager.Show(new Notification("Missing Source", "Source is required for a new entry.", NotificationType.Warning));
+                    return;
+                }
+
+                tcs.TrySetResult(new NewEntryInput(key, source, target));
+                dialog.Close();
+            };
+
+            buttons[1].Click += (_, _) =>
+            {
+                tcs.TrySetResult(null);
+                dialog.Close();
+            };
+
+            dialog.Closed += (_, _) => tcs.TrySetResult(null);
+
+            await dialog.ShowDialog(this);
+            return await tcs.Task;
+        }
+
+        private void DeleteSelectedRowsMenuItem_Click(object? sender, RoutedEventArgs e)
+        {
+            DeleteSelectedRows();
+        }
+
+        private void DeleteSelectedRows()
+        {
+            if (SelectedDocument == null || _rows == null || _rows.Count == 0)
+                return;
+
+            var selectedRows = _dataGrid.SelectedItems?.Cast<DataRow>().Distinct().ToList()
+                ?? new List<DataRow>();
+
+            if (selectedRows.Count == 0 && _dataGrid.SelectedItem is DataRow selectedRow)
+            {
+                selectedRows.Add(selectedRow);
+            }
+
+            if (selectedRows.Count == 0)
+                return;
+
+            foreach (var row in selectedRows)
+            {
+                _rows.Remove(row);
+            }
+
+            MarkDocumentDirty(SelectedDocument);
+            _dataGrid.InvalidateMeasure();
+            _dataGrid.InvalidateArrange();
+            _dataGrid.InvalidateVisual();
+            UpdateStatusBar();
+
+            _notificationManager.Show(
+                new Notification(
+                    "Rows Deleted",
+                    $"Deleted {selectedRows.Count} row(s).",
+                    NotificationType.Information
+                )
+            );
+        }
+
+        private sealed record NewEntryInput(string Key, string Source, string Target);
     }
 }

@@ -162,7 +162,8 @@ public class AutoUpdater
     private void LaunchUpdateProcess()
     {
         string currentProcessId = Process.GetCurrentProcess().Id.ToString();
-        string currentExePath = Process.GetCurrentProcess().MainModule.FileName;
+        string currentExePath = Environment.ProcessPath
+            ?? throw new InvalidOperationException("Unable to resolve current executable path.");
         string updateScriptPath = Path.Combine(Path.GetTempPath(), "update_script");
 
         string scriptContent;
@@ -243,10 +244,13 @@ done";
         };
 
         var tcs = new TaskCompletionSource<string>();
-        var buttons = ((StackPanel)((StackPanel)dialog.Content).Children[1]).Children;
+        var buttons = GetDialogButtons(dialog, 2);
+        if (buttons == null)
+            return "Cancel";
 
-        ((Button)buttons[0]).Click += (s, e) => { tcs.SetResult("Update"); dialog.Close(); };
-        ((Button)buttons[1]).Click += (s, e) => { tcs.SetResult("Cancel"); dialog.Close(); };
+        buttons[0].Click += (s, e) => { tcs.TrySetResult("Update"); dialog.Close(); };
+        buttons[1].Click += (s, e) => { tcs.TrySetResult("Cancel"); dialog.Close(); };
+        dialog.Closed += (_, _) => tcs.TrySetResult("Cancel");
 
         await dialog.ShowDialog(_mainWindow);
         return await tcs.Task;
@@ -274,19 +278,22 @@ done";
         };
 
         var tcs = new TaskCompletionSource<string>();
-        var buttons = ((StackPanel)((StackPanel)dialog.Content).Children[1]).Children;
+        var buttons = GetDialogButtons(dialog, 3);
+        if (buttons == null)
+            return "Cancel";
 
-        ((Button)buttons[0]).Click += (s, e) =>
+        buttons[0].Click += (s, e) =>
         {
-            try { _mainWindow.SaveEditedData(); tcs.SetResult("Update"); dialog.Close(); }
+            try { _mainWindow.SaveEditedData(); tcs.TrySetResult("Update"); dialog.Close(); }
             catch (Exception ex)
             {
                 _notificationManager.Show(new Notification("Save Error", ex.Message, NotificationType.Error));
-                tcs.SetResult("Cancel"); dialog.Close();
+                tcs.TrySetResult("Cancel"); dialog.Close();
             }
         };
-        ((Button)buttons[1]).Click += (s, e) => { tcs.SetResult("Update"); dialog.Close(); };
-        ((Button)buttons[2]).Click += (s, e) => { tcs.SetResult("Cancel"); dialog.Close(); };
+        buttons[1].Click += (s, e) => { tcs.TrySetResult("Update"); dialog.Close(); };
+        buttons[2].Click += (s, e) => { tcs.TrySetResult("Cancel"); dialog.Close(); };
+        dialog.Closed += (_, _) => tcs.TrySetResult("Cancel");
 
         await dialog.ShowDialog(_mainWindow);
         return await tcs.Task;
@@ -300,7 +307,33 @@ done";
                 "Update in progress",
                 "The application will restart shortly.",
                 NotificationType.Information,
-                TimeSpan.FromSeconds(10)));
+            TimeSpan.FromSeconds(10)));
         });
+    }
+
+    private static Button[]? GetDialogButtons(Window dialog, int expectedCount)
+    {
+        var rootPanel = dialog.Content as StackPanel;
+        var buttonPanel = rootPanel?.Children.Count > 1 ? rootPanel.Children[1] as StackPanel : null;
+        Button[]? buttons = null;
+
+        if (buttonPanel != null)
+        {
+            var result = new Button[buttonPanel.Children.Count];
+            for (int i = 0; i < buttonPanel.Children.Count; i++)
+            {
+                if (buttonPanel.Children[i] is not Button button)
+                    return null;
+
+                result[i] = button;
+            }
+
+            buttons = result;
+        }
+
+        if (buttons == null || buttons.Length < expectedCount)
+            return null;
+
+        return buttons;
     }
 }

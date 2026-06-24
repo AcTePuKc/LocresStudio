@@ -7,15 +7,10 @@
 		<Nullable>enable</Nullable>
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     
-    <!-- RELEASE OPTIMIZATIONS -->
-    <PublishTrimmed>true</PublishTrimmed>
-    <TrimMode>link</TrimMode>
+    <!-- Avalonia reflection bindings and Newtonsoft.Json config deserialization are not trim-safe. -->
+    <PublishTrimmed>false</PublishTrimmed>
     <SelfContained>true</SelfContained>
   </PropertyGroup>
-  
-  <ItemGroup>
-     <TrimmerRootAssembly Include="UnrealLocresEditor" />
-  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="Avalonia.Desktop" Version="11.2.4" />

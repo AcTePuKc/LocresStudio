@@ -12,6 +12,11 @@ namespace UnrealLocresEditor.Utils
 
         public DiscordService()
         {
+            if (PlatformUtils.IsLinux())
+            {
+                return;
+            }
+
             var config = AppConfig.Instance;
             if (config.DiscordRPCEnabled)
             {
@@ -22,6 +27,11 @@ namespace UnrealLocresEditor.Utils
         // CHANGE: "private" -> "public" so MainWindow can call it
         public void Initialize()
         {
+            if (PlatformUtils.IsLinux())
+            {
+                return;
+            }
+
             try
             {
                 if (_client != null && _client.IsInitialized) return;
@@ -42,6 +52,11 @@ namespace UnrealLocresEditor.Utils
 
         public void UpdatePresence(LocresDocument? document)
         {
+            if (PlatformUtils.IsLinux())
+            {
+                return;
+            }
+
             var config = AppConfig.Instance;
 
             if (!config.DiscordRPCEnabled)

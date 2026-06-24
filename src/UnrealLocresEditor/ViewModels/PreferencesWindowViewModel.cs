@@ -39,6 +39,7 @@ namespace UnrealLocresEditor.ViewModels
         private TimeSpan _selectedAutoSaveInterval;
         private bool _autoSaveEnabled;
         private bool _autoUpdateEnabled;
+        private bool _openSaveFolderAfterSaving;
         private double _defaultColumnWidth;
 
         // --- FONT SETTINGS ---
@@ -121,6 +122,12 @@ namespace UnrealLocresEditor.ViewModels
             }
         }
 
+        public bool OpenSaveFolderAfterSaving
+        {
+            get => _openSaveFolderAfterSaving;
+            set => this.RaiseAndSetIfChanged(ref _openSaveFolderAfterSaving, value);
+        }
+
         public IEnumerable<FontFamily> AvailableFonts
         {
             get => _availableFonts;
@@ -186,6 +193,7 @@ namespace UnrealLocresEditor.ViewModels
             SelectedAutoSaveInterval = config.AutoSaveInterval;
             AutoSaveEnabled = config.AutoSaveEnabled;
             AutoUpdateEnabled = config.AutoUpdateEnabled;
+            OpenSaveFolderAfterSaving = config.OpenSaveFolderAfterSaving;
             DefaultColumnWidth = config.DefaultColumnWidth;
             EditorFontFamily = config.EditorFontFamily;
             EditorFontSize = config.EditorFontSize;
@@ -215,6 +223,7 @@ namespace UnrealLocresEditor.ViewModels
             config.AutoSaveInterval = SelectedAutoSaveInterval;
             config.AutoSaveEnabled = AutoSaveEnabled;
             config.AutoUpdateEnabled = AutoUpdateEnabled;
+            config.OpenSaveFolderAfterSaving = OpenSaveFolderAfterSaving;
             config.DefaultColumnWidth = DefaultColumnWidth;
             config.EditorFontSize = EditorFontSize;
             config.EnableRTL = EnableRTL;

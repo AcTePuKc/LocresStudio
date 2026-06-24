@@ -20,7 +20,9 @@ namespace UnrealLocresEditor.Models
 
         public bool IsNewKey { get; set; }
 
-        public event PropertyChangedEventHandler PropertyChanged;
+        public uint SourceHash { get; set; }
+
+        public event PropertyChangedEventHandler? PropertyChanged;
 
        
         public DataRow()

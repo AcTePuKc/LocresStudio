@@ -79,11 +79,14 @@
 
 		<Menu Grid.Row="0" Grid.ColumnSpan="2">
 
-			<MenuItem Header="_File">
+			<MenuItem Name="uiFileMenuItem" Header="_File">
 				<MenuItem Name="uiOpenMenuItem"
 									Click="OpenMenuItem_Click"
 									Header="Open locres"
 									InputGesture="Ctrl+O"/>
+
+				<MenuItem Name="uiRecentFilesMenuItem" Header="Recent Files"/>
+
 				<MenuItem Name="uiMergeMenuItem"
 									Click="MergeMenuItem_Click"
 									Header="Merge locres"/>
@@ -142,6 +145,11 @@
 									Header="Copy Source to Target (_Multiple)"
 									InputGesture="Ctrl+Shift+T"/>
 				<MenuItem Header="-"/>
+				<MenuItem Name="uiDeleteSelectedRowsMenuItem"
+									Click="DeleteSelectedRowsMenuItem_Click"
+									Header="Remove Selected Row(s)"
+									InputGesture="Ctrl+Delete"/>
+				<MenuItem Header="-"/>
 				<MenuItem Name="uiPreferencesMenuItem"
 									Header="Preferences"/>
 			</MenuItem>
@@ -189,6 +197,7 @@
 				x:DataType="models:DataRow"
 				Grid.Row="2"
 				Grid.ColumnSpan="2"
+				Margin="0"
 				AutoGenerateColumns="False"
 				Background="{DynamicResource BackgroundColor}"
 				BorderBrush="{DynamicResource BorderColor}"
@@ -230,6 +239,13 @@
 					<MenuItem Header="Find and Replace..."
 										Click="FindReplaceMenuItem_Click"
 										InputGesture="Ctrl+H"/>
+					<Separator/>
+					<MenuItem Header="Delete Selected Row(s)"
+										Click="DeleteSelectedRowsMenuItem_Click"
+										InputGesture="Ctrl+Delete"/>
+					<Separator/>
+					<MenuItem Header="Add New Entry..."
+										Click="AddEmptyRowMenuItem_Click"/>
 				</ContextMenu>
 			</DataGrid.ContextMenu>
 		</DataGrid>

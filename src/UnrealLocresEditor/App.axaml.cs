@@ -33,10 +33,11 @@ namespace UnrealLocresEditor
             AvaloniaXamlLoader.Load(this);
 
             var config = AppConfig.Instance;
+            Logger.Configure(config.EnableDebugLogging);
             SetTheme(config.ThemeKey);
             SetAccent(Color.Parse(config.AccentColor));
 
-            if (Environment.GetCommandLineArgs().Contains("-console"))
+            if (PlatformUtils.IsWindows() && Environment.GetCommandLineArgs().Contains("-console"))
             {
                 if (AllocConsole()) { _consoleAllocated = true; }
             }
@@ -105,23 +106,28 @@ namespace UnrealLocresEditor
             }
         }
 
-        private void OnUnhandledException(object sender, UnhandledExceptionEventArgs e)
+        private void OnUnhandledException(object? sender, UnhandledExceptionEventArgs e)
         {
             LogException(e.ExceptionObject as Exception, "Unhandled Exception");
         }
 
-        private void OnUnobservedTaskException(object sender, UnobservedTaskExceptionEventArgs e)
+        private void OnUnobservedTaskException(object? sender, UnobservedTaskExceptionEventArgs e)
         {
             LogException(e.Exception, "Unobserved Task Exception");
             e.SetObserved();
         }
 
-        private void LogException(Exception ex, string type)
+        private void LogException(Exception? ex, string type)
         {
             try
             {
-                string path = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), "UnrealLocresEditor", "Logs", "crashlog.txt");
-                Directory.CreateDirectory(Path.GetDirectoryName(path));
+                string logDirectory = Path.Combine(
+                    Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+                    "UnrealLocresEditor",
+                    "Logs"
+                );
+                Directory.CreateDirectory(logDirectory);
+                string path = Path.Combine(logDirectory, "crashlog.txt");
                 File.AppendAllText(path, $"{DateTime.Now}: {type} - {ex?.Message}\n{ex?.StackTrace}\n\n");
             }
             catch { }

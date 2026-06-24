@@ -18,6 +18,8 @@ namespace UnrealLocresEditor.Models
         private string _workingPath = string.Empty;
         private string? _activeCsvPath;
         private string? _displayNameOverride;
+        private HashSet<string> _baselineKeys = new(StringComparer.Ordinal);
+        private Utils.LocresFileData? _locresData;
 
         public LocresDocument(string originalPath)
         {
@@ -48,6 +50,18 @@ namespace UnrealLocresEditor.Models
 
         // Changed return type to ObservableCollection to match field
         public ObservableCollection<string> ColumnHeaders => _columnHeaders;
+
+        public HashSet<string> BaselineKeys
+        {
+            get => _baselineKeys;
+            set => _baselineKeys = value ?? new HashSet<string>(StringComparer.Ordinal);
+        }
+
+        internal Utils.LocresFileData? LocresData
+        {
+            get => _locresData;
+            set => _locresData = value;
+        }
 
         public bool HasUnsavedChanges
         {

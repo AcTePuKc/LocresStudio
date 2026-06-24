@@ -13,8 +13,8 @@ namespace UnrealLocresEditor.Views
         public string AppName { get; } = "Unreal Locres Studio";
         public string Version { get; private set; } = "Version: Unknown";
         private const string GitHubUrl = "https://github.com/AcTePuKc/LocresStudio";
-        private WindowNotificationManager _notificationManager;
-        private MainWindow _mainWindow;
+        private WindowNotificationManager? _notificationManager;
+        private MainWindow? _mainWindow;
 
         public AboutWindow()
         {
